@@ -144,20 +144,27 @@ class HandsFreeService : android.app.Service() {
 
     override fun onCreate() {
         super.onCreate()
-        settingsRepository = ServiceLocator.settingsRepository
-        confirmation = ConfirmationPlayer(this).also { it.initialize() }
-        locationAcquirer = LocationAcquirer(this)
-        routeMonitor = AudioRouteMonitor(this)
-        engine = ListenerEngine(
-            repository = ServiceLocator.locationRepository,
-            locationAcquirer = locationAcquirer,
-            confirmation = confirmation,
-            scope = scope,
-        )
-        engine.startObservingDatabase()
-        EngineProvider.set(engine)
-        createNotificationChannel()
-        registerHeadsetReceiver()
+        try {
+            settingsRepository = ServiceLocator.settingsRepository
+            confirmation = ConfirmationPlayer(this).also { it.initialize() }
+            locationAcquirer = LocationAcquirer(this)
+            routeMonitor = AudioRouteMonitor(this)
+            engine = ListenerEngine(
+                repository = ServiceLocator.locationRepository,
+                locationAcquirer = locationAcquirer,
+                confirmation = confirmation,
+                scope = scope,
+            )
+            engine.startObservingDatabase()
+            EngineProvider.set(engine)
+            createNotificationChannel()
+            registerHeadsetReceiver()
+        } catch (t: Throwable) {
+            // Avoid leaking native/audio resources if service setup fails part-way through.
+            runCatching { if (::confirmation.isInitialized) confirmation.shutdown() }
+            runCatching { scope.cancel() }
+            throw t
+        }
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
