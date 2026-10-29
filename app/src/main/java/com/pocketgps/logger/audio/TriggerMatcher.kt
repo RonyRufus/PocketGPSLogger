@@ -34,7 +34,7 @@ object TriggerMatcher {
         val phrasePattern = triggerTokens.joinToString(separator = "\\s+") {
             Regex.escape(it)
         }
-        return Regex("(?:^|\\s)$phrasePattern(?:\\\\s|$)").containsMatchIn(normalizedText)
+        return Regex("(?:^|\\s)$phrasePattern(?:\\s|$)").containsMatchIn(normalizedText)
     }
 
     /** Returns the first index of a contiguous trigger in [recognized], or -1 when absent. */
