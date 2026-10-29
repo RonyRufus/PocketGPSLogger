@@ -3,12 +3,11 @@ package com.pocketgps.logger.audio
 /**
  * Validates recognised text against the configured trigger phrase.
  *
- * Rules (all pure Kotlin, unit-tested):
- *  - Case and harmless punctuation are normalised away.
- *  - The trigger must appear as a **contiguous run of whole words**. A single matching word is
- *    never enough, so "save" alone does not fire "save spot".
- *  - Empty, partial or malformed input is rejected.
- *  - A phrase shorter than two words is rejected as too weak for always-on use.
+ * Rules:
+ *  - Case, punctuation and repeated whitespace are normalised away.
+ *  - The trigger must appear as a contiguous run of whole words.
+ *  - Regex metacharacters in user-configured phrases are always escaped.
+ *  - A trigger must contain at least two words to reduce accidental activations.
  */
 object TriggerMatcher {
 
@@ -26,28 +25,19 @@ object TriggerMatcher {
         normalize(text).split(' ').filter { it.isNotEmpty() }
 
     /**
-     * True when [recognized] contains [trigger] as a contiguous word sequence.
-     * Both arguments are raw text; normalisation happens here.
+     * Match a trigger using an escaped regular expression with whole-phrase boundaries.
+     * Normalisation happens before regex construction, and every token is escaped, so a
+     * configured phrase can never inject regex operators or change the matching rules.
      */
     fun matches(recognized: String, trigger: String): Boolean =
         matchesTokens(tokens(recognized), tokens(trigger))
 
     fun matchesTokens(recognized: List<String>, trigger: List<String>): Boolean {
-        if (recognized.isEmpty() || trigger.isEmpty()) return false
-        if (trigger.size < 2) return false // a lone word is too risky for always-on
-        if (recognized.size < trigger.size) return false
-        val last = recognized.size - trigger.size
-        for (start in 0..last) {
-            var ok = true
-            for (k in trigger.indices) {
-                if (recognized[start + k] != trigger[k]) {
-                    ok = false
-                    break
-                }
-            }
-            if (ok) return true
-        }
-        return false
+        if (recognized.isEmpty() || trigger.size < 2 || recognized.size < trigger.size) return false
+
+        val phrasePattern = trigger.joinToString(separator = "\\s+") { Regex.escape(it) }
+        val pattern = Regex("(^|\\s)$phrasePattern(?=\\s|$)")
+        return pattern.containsMatchIn(recognized.joinToString(" "))
     }
 
     /** True when the text is a usable trigger definition (>= 2 words, alphanumeric). */
@@ -56,10 +46,7 @@ object TriggerMatcher {
         return t.size >= 2 && t.all { it.isNotEmpty() }
     }
 
-    /**
-     * Returns the matched phrase text if [recognized] satisfies [trigger], else null.
-     * The returned string is the normalised trigger definition.
-     */
+    /** Returns the normalised trigger definition when accepted, else null. */
     fun acceptedPhrase(recognized: String, trigger: String): String? =
         if (matches(recognized, trigger)) normalize(trigger) else null
 
