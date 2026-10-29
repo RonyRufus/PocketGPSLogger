@@ -85,13 +85,19 @@ class VoskKeywordSpotter(
     @Synchronized
     override fun beginTranscription(): Boolean {
         if (transcribing) return true
-        val next = runCatching { newTranscriptionRecognizer() }.getOrNull() ?: return false
+        // Release the grammar decoder before allocating the transcription decoder to reduce
+        // peak native memory on lower-RAM phones.
         val old = recognizer
+        runCatching { old.close() }
+        val next = runCatching { newTranscriptionRecognizer() }.getOrNull()
+        if (next == null) {
+            recognizer = newKeywordRecognizer(phrases)
+            return false
+        }
         recognizer = next
         transcribing = true
         endpointDetected = false
         transcriptParts.clear()
-        runCatching { old.close() }
         return true
     }
 
@@ -105,12 +111,13 @@ class VoskKeywordSpotter(
         appendTranscriptText(runCatching { recognizer.finalResult }.getOrDefault("{}"))
         val transcript = transcriptParts.joinToString(" ").replace(Regex("\\s+"), " ").trim()
         val old = recognizer
-        recognizer = newKeywordRecognizer(phrases)
+        runCatching { old.close() }
         transcribing = false
         endpointDetected = false
         transcriptParts.clear()
         streamBaseSamples = totalSamplesFed
-        runCatching { old.close() }
+        // Close the transcription decoder before restoring the lightweight grammar decoder.
+        recognizer = newKeywordRecognizer(phrases)
         return transcript
     }
 
