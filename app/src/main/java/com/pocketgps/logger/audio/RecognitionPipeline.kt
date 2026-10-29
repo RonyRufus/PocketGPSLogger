@@ -63,10 +63,12 @@ class RecognitionPipeline(
         trackMute(n)
         val t0 = clock()
         val suppressed = isSuppressed()
-        val events = if (suppressed) {
-            spotter.acceptWaveForm(zeros, 0, n)
-        } else {
-            spotter.acceptWaveForm(buffer, 0, n)
+        val events = when {
+            // Do not feed confirmation tones into note transcription: skip this chunk while the
+            // cue plays, but keep draining AudioRecord so the microphone never blocks.
+            spotter.isTranscribing && suppressed -> emptyList()
+            suppressed -> spotter.acceptWaveForm(zeros, 0, n)
+            else -> spotter.acceptWaveForm(buffer, 0, n)
         }
         val elapsedMs = (clock() - t0) / 1_000_000f
         val rms = computeRms(n)
