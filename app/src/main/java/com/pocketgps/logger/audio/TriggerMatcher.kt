@@ -31,7 +31,7 @@ object TriggerMatcher {
         if (triggerTokens.size < 2) return false
         val normalizedText = normalize(recognized)
         if (normalizedText.isEmpty()) return false
-        val phrasePattern = triggerTokens.joinToString(separator = "\\\\s+") {
+        val phrasePattern = triggerTokens.joinToString(separator = "\\s+") {
             Regex.escape(it)
         }
         return Regex("(?:^|\\\\s)$phrasePattern(?:\\\\s|$)").containsMatchIn(normalizedText)
