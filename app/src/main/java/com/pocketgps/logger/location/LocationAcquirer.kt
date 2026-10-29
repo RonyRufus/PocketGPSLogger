@@ -20,6 +20,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
+import java.util.concurrent.TimeUnit
 import kotlin.coroutines.resume
 
 /**
@@ -238,7 +239,11 @@ class LocationAcquirer(private val context: Context) {
         fused?.lastLocation?.let { task ->
             // Blocking here is acceptable: we are already on Dispatchers.IO and the task is
             // normally already complete (cached). Guard with a short bounded await.
-            val loc = runCatching { com.google.android.gms.tasks.Tasks.await(task) }.getOrNull()
+            // Last-location tasks are usually already complete. Bound this cache lookup so a
+            // stalled Play Services task cannot consume the fresh-fix timeout.
+            val loc = runCatching {
+                com.google.android.gms.tasks.Tasks.await(task, 250, TimeUnit.MILLISECONDS)
+            }.getOrNull()
             if (loc != null) return loc
         }
         val lm = locationManager ?: return null

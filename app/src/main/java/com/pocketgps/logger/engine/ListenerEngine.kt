@@ -14,6 +14,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.util.concurrent.ConcurrentHashMap
 
 /**
  * Owns the listening state machine and orchestrates trigger → GPS → persist → confirm.
@@ -42,6 +43,9 @@ class ListenerEngine(
     @Volatile private var active = false
 
     private var dbObserver: Job? = null
+
+    /** Transcript can finish before or after GPS acquisition; key it by the trigger timestamp. */
+    private val pendingTranscripts = ConcurrentHashMap<Long, String>()
 
     // ------------------------------------------------------------------ lifecycle
 
@@ -199,6 +203,22 @@ class ListenerEngine(
         }
     }
 
+    /**
+     * Called by the audio pipeline after offline transcription ends. Handles both orderings:
+     * the note may arrive before the GPS row is inserted, or after it.
+     */
+    fun onTranscriptCaptured(triggerTimestampMs: Long, transcript: String) {
+        val note = transcript.trim().take(2_000)
+        if (triggerTimestampMs <= 0L || note.isEmpty()) return
+        pendingTranscripts[triggerTimestampMs] = note
+        scope.launch(Dispatchers.IO) {
+            val updated = runCatching {
+                repository.updateNotesForTrigger(triggerTimestampMs, note)
+            }.getOrDefault(0)
+            if (updated > 0) pendingTranscripts.remove(triggerTimestampMs, note)
+        }
+    }
+
     private suspend fun persist(
         triggerTimestampMs: Long,
         triggerPhrase: String,
@@ -208,6 +228,7 @@ class ListenerEngine(
         _uiState.update { it.copy(state = ListenerState.SAVING) }
 
         val warning = buildWarning(fix)
+        val voiceNote = pendingTranscripts[triggerTimestampMs]
         val record = LocationRecord(
             latitude = fix.latitude,
             longitude = fix.longitude,
@@ -218,7 +239,7 @@ class ListenerEngine(
             locationAgeSeconds = fix.ageSeconds,
             triggerPhrase = triggerPhrase,
             saveStatus = "success",
-            notes = warning,
+            notes = combineNotes(warning, voiceNote),
         )
 
         val committed = withContext(Dispatchers.IO) {
@@ -226,7 +247,17 @@ class ListenerEngine(
         }
 
         if (committed != null) {
-            val saved = record.copy(id = committed)
+            // Close the race where transcription arrived while the insert was in flight.
+            pendingTranscripts[triggerTimestampMs]?.let { transcript ->
+                runCatching {
+                    repository.updateNotesForTrigger(
+                        triggerTimestampMs,
+                        combineNotes(warning, transcript) ?: transcript,
+                    )
+                }
+                pendingTranscripts.remove(triggerTimestampMs, transcript)
+            }
+            val saved = record.copy(id = committed, notes = combineNotes(warning, voiceNote))
             if (active) {
                 _uiState.update {
                     it.copy(
@@ -252,6 +283,12 @@ class ListenerEngine(
                 }
             }
         }
+    }
+
+    private fun combineNotes(warning: String?, transcript: String?): String? = when {
+        warning.isNullOrBlank() -> transcript?.takeIf { it.isNotBlank() }
+        transcript.isNullOrBlank() -> warning
+        else -> "$warning\n$transcript"
     }
 
     private fun buildWarning(fix: LocationAcquirer.Fix): String? {

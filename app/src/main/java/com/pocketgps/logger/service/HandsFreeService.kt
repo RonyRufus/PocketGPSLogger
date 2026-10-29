@@ -127,6 +127,7 @@ class HandsFreeService : android.app.Service() {
 
     @Volatile private var currentSettings = AppSettings()
     @Volatile private var listeningActive = false
+    @Volatile private var activeTranscriptionTriggerTimestampMs = 0L
 
     private val audioManager: AudioManager by lazy { getSystemService(AudioManager::class.java) }
     private val powerManager: PowerManager by lazy { getSystemService(PowerManager::class.java) }
@@ -317,10 +318,17 @@ class HandsFreeService : android.app.Service() {
                     cooldownSeconds = currentSettings.cooldownSeconds,
                 ).also { pipeline ->
                     pipeline.isSuppressed = { confirmation.isPlaying() }
+                    pipeline.transcriptionEnabled = true
+                    pipeline.onTranscript = { transcript ->
+                        // The raw transcript is retained verbatim in the matching location record.
+                        engine.onTranscriptCaptured(activeTranscriptionTriggerTimestampMs, transcript)
+                    }
                     pipeline.onTrigger = { _, _, _ ->
                         // Hand off immediately; GPS work runs in the engine's own coroutine so the
-                        // audio loop is never blocked.
-                        engine.onTriggerDetected(System.currentTimeMillis())
+                        // audio loop is never blocked. Keep the same timestamp for the later note.
+                        val triggerTimestampMs = System.currentTimeMillis()
+                        activeTranscriptionTriggerTimestampMs = triggerTimestampMs
+                        engine.onTriggerDetected(triggerTimestampMs)
                         updateNotification()
                     }
                     pipeline.onMuteDetected = { engine.onAudioInterrupted("microphone muted") }
@@ -512,7 +520,13 @@ class HandsFreeService : android.app.Service() {
 
     private fun startForegroundCompat(includeMicrophoneType: Boolean) {
         val type = if (includeMicrophoneType && Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+            var types = ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+            // The location type allows location access to continue while screen-off after a
+            // user-initiated start from the visible activity. Avoid requesting it without grant.
+            if (hasLocationPermission()) {
+                types = types or ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION
+            }
+            types
         } else {
             0
         }
@@ -520,6 +534,14 @@ class HandsFreeService : android.app.Service() {
             this, NOTIFICATION_ID, buildNotification(engine.uiState.value), type,
         )
     }
+
+    private fun hasLocationPermission(): Boolean =
+        ContextCompat.checkSelfPermission(
+            this, android.Manifest.permission.ACCESS_FINE_LOCATION,
+        ) == PackageManager.PERMISSION_GRANTED ||
+            ContextCompat.checkSelfPermission(
+                this, android.Manifest.permission.ACCESS_COARSE_LOCATION,
+            ) == PackageManager.PERMISSION_GRANTED
 
     private fun updateNotification() {
         runCatching {
