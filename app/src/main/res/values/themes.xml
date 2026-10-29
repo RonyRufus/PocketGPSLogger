@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+      Compose drives all colours and typography. The XML theme only needs to provide a
+      platform NoActionBar parent so the app links without pulling in the Material Components
+      view library. Material 3 theming lives in ui/theme/Theme.kt.
+    -->
+    <style name="Theme.PocketGPSLogger" parent="@android:style/Theme.Material.Light.NoActionBar">
+        <item name="android:windowBackground">@color/white</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+    </style>
+
+    <color name="white">#FFFFFF</color>
+    <color name="black">#000000</color>
+    <color name="gray_600">#757575</color>
+    <color name="gray_300">#E0E0E0</color>
+    <color name="green_600">#388E3C</color>
+    <color name="orange_600">#F57C00</color>
+</resources>
