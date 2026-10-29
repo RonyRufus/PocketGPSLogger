@@ -40,9 +40,9 @@ class RecognitionPipelineTest {
         override fun close() = Unit
     }
 
-    private fun word(text: String) = RecognitionEvent(
+    private fun word(text: String, confidence: Float = 0.9f) = RecognitionEvent(
         word = text,
-        confidence = 0.9f,
+        confidence = confidence,
         startStreamSeconds = 0f,
         endStreamSeconds = 0f,
     )
@@ -72,6 +72,18 @@ class RecognitionPipelineTest {
             script = listOf(listOf(word("save"), word("spot"))),
             clock = { now },
         )
+        pl.processOneChunk()
+        assertEquals(1, triggers.size)
+    }
+
+    @Test
+    fun confidenceIsCalculatedFromMatchedWordsNotTrailingWords() {
+        var now = 0L
+        val (pl, triggers) = pipeline(
+            script = listOf(listOf(word("save", 0.9f), word("spot", 0.9f), word("yes", 0.1f))),
+            clock = { now },
+        )
+        pl.minConfidence = 0.8f
         pl.processOneChunk()
         assertEquals(1, triggers.size)
     }
