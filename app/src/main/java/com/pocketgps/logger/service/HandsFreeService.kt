@@ -174,10 +174,10 @@ class HandsFreeService : android.app.Service() {
             // Cannot host a microphone FGS without the permission. Report the problem, then
             // stop; the UI drives the permission flow. startForeground is attempted so the
             // startForegroundService contract is not violated if this path is ever reached.
-            startForegroundCompat(includeMicrophoneType = false)
-            engine.onError("Microphone permission not granted")
-            updateNotification()
-            stopSelf()
+            runCatching { startForegroundCompat(includeMicrophoneType = false) }
+            runCatching { engine.onError("Microphone permission not granted") }
+            runCatching { updateNotification() }
+            stopSelf(startId)
             return START_NOT_STICKY
         }
 
