@@ -21,6 +21,10 @@ class LocationRepository(private val dao: LocationDao) {
     /** Insert and return the generated id. Throws if the write fails. */
     suspend fun insert(record: LocationRecord): Long = dao.insert(record)
 
+    /** Attach a completed voice note to a record; returns 0 if GPS persistence has not finished. */
+    suspend fun updateNotesForTrigger(triggerTimestamp: Long, notes: String): Int =
+        dao.updateNotesForTrigger(triggerTimestamp, notes)
+
     suspend fun delete(id: Long) = dao.deleteById(id)
 
     suspend fun clearAll() = dao.clearAll()
