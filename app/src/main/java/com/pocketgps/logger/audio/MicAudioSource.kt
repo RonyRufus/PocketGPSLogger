@@ -76,8 +76,7 @@ class MicAudioSource(
     override fun read(dest: ShortArray, offset: Int, length: Int): Int {
         val r = record ?: return -1
         return try {
-            val n = r.read(dest, offset, length)
-            if (n >= 0) n else n
+            r.read(dest, offset, length)
         } catch (t: IllegalStateException) {
             -1
         }
