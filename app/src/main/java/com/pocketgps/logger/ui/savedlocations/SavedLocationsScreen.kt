@@ -1,5 +1,7 @@
 package com.pocketgps.logger.ui.savedlocations
 
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -11,16 +13,13 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Delete
-import androidx.compose.material.icons.filled.LocationOn
-import androidx.compose.material.icons.filled.Map
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -36,13 +35,27 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.pocketgps.logger.data.LocationRecord
+import com.pocketgps.logger.ui.common.LabeledValue
+import com.pocketgps.logger.ui.common.SectionCard
 import com.pocketgps.logger.ui.format.Formatters
+import com.pocketgps.logger.ui.icons.AppIcons
 
 @Composable
 fun SavedLocationsScreen(viewModel: SavedLocationsViewModel = viewModel()) {
     val records by viewModel.records.collectAsStateWithLifecycle()
+    val stats by viewModel.stats.collectAsStateWithLifecycle()
+    val exportOp by viewModel.exportOp.collectAsStateWithLifecycle()
     val context = LocalContext.current
     var confirmClear by remember { mutableStateOf(false) }
+    var showExportDialog by remember { mutableStateOf(false) }
+
+    // SAF create-document launchers keep the app free of storage permissions entirely.
+    val gpxLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("application/gpx+xml"),
+    ) { uri -> uri?.let { viewModel.export(it, gpx = true) } }
+    val csvLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("text/csv"),
+    ) { uri -> uri?.let { viewModel.export(it, gpx = false) } }
 
     if (confirmClear) {
         AlertDialog(
@@ -61,6 +74,54 @@ fun SavedLocationsScreen(viewModel: SavedLocationsViewModel = viewModel()) {
         )
     }
 
+    if (showExportDialog) {
+        AlertDialog(
+            onDismissRequest = { showExportDialog = false },
+            title = { Text("Export all locations") },
+            text = {
+                Text(
+                    "GPX opens in OsmAnd, Organic Maps, Google Earth and Garmin tools. " +
+                        "CSV opens in any spreadsheet. Neither format sends data anywhere — " +
+                        "the file is written where you choose.",
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    showExportDialog = false
+                    gpxLauncher.launch("pocket-gps-spots.gpx")
+                }) { Text("GPX") }
+            },
+            dismissButton = {
+                TextButton(onClick = {
+                    showExportDialog = false
+                    csvLauncher.launch("pocket-gps-spots.csv")
+                }) { Text("CSV") }
+            },
+        )
+    }
+
+    exportOp.let { op ->
+        when (op) {
+            is SavedLocationsViewModel.ExportOp.Done,
+            is SavedLocationsViewModel.ExportOp.Failed,
+            -> {
+                val message = (op as? SavedLocationsViewModel.ExportOp.Done)?.message
+                    ?: (op as SavedLocationsViewModel.ExportOp.Failed).message
+                val isError = op is SavedLocationsViewModel.ExportOp.Failed
+                Text(
+                    message,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = if (isError) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { viewModel.clearExportOp() }
+                        .padding(horizontal = 16.dp, vertical = 4.dp),
+                )
+            }
+            else -> Unit
+        }
+    }
+
     Column(Modifier.fillMaxSize()) {
         Row(
             modifier = Modifier
@@ -74,8 +135,13 @@ fun SavedLocationsScreen(viewModel: SavedLocationsViewModel = viewModel()) {
                 style = MaterialTheme.typography.titleLarge,
                 fontWeight = FontWeight.SemiBold,
             )
-            if (records.isNotEmpty()) {
-                TextButton(onClick = { confirmClear = true }) { Text("Clear all") }
+            Row {
+                if (records.isNotEmpty()) {
+                    IconButton(onClick = { showExportDialog = true }) {
+                        Icon(AppIcons.FileDownload, contentDescription = "Export to GPX or CSV")
+                    }
+                    TextButton(onClick = { confirmClear = true }) { Text("Clear all") }
+                }
             }
         }
 
@@ -88,7 +154,7 @@ fun SavedLocationsScreen(viewModel: SavedLocationsViewModel = viewModel()) {
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
                 Icon(
-                    Icons.Filled.LocationOn,
+                    AppIcons.LocationOn,
                     contentDescription = null,
                     modifier = Modifier.size(48.dp),
                     tint = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -112,6 +178,13 @@ fun SavedLocationsScreen(viewModel: SavedLocationsViewModel = viewModel()) {
                 ),
                 verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
+                item {
+                    SectionCard(title = "Summary") {
+                        LabeledValue("Total spots", stats.total.toString())
+                        LabeledValue("Saved today", stats.today.toString())
+                        LabeledValue("Last 7 days", stats.last7Days.toString())
+                    }
+                }
                 items(records, key = { it.id }) { record ->
                     RecordCard(
                         record = record,
@@ -121,6 +194,14 @@ fun SavedLocationsScreen(viewModel: SavedLocationsViewModel = viewModel()) {
                                 lat = record.latitude,
                                 lon = record.longitude,
                                 label = "Saved spot",
+                            )
+                        },
+                        onCopy = {
+                            Formatters.copyCoordinates(context, record.latitude, record.longitude)
+                        },
+                        onShare = {
+                            Formatters.shareSpot(
+                                context, record.latitude, record.longitude, record.triggerTimestamp,
                             )
                         },
                         onDelete = { viewModel.delete(record.id) },
@@ -135,6 +216,8 @@ fun SavedLocationsScreen(viewModel: SavedLocationsViewModel = viewModel()) {
 private fun RecordCard(
     record: LocationRecord,
     onOpenMap: () -> Unit,
+    onCopy: () -> Unit,
+    onShare: () -> Unit,
     onDelete: () -> Unit,
 ) {
     Card(
@@ -146,7 +229,7 @@ private fun RecordCard(
         Column(Modifier.padding(16.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Icon(
-                    Icons.Filled.LocationOn,
+                    AppIcons.LocationOn,
                     contentDescription = null,
                     tint = MaterialTheme.colorScheme.primary,
                 )
@@ -162,12 +245,6 @@ private fun RecordCard(
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
-                }
-                IconButton(onClick = onOpenMap) {
-                    Icon(Icons.Filled.Map, contentDescription = "Open in map")
-                }
-                IconButton(onClick = onDelete) {
-                    Icon(Icons.Filled.Delete, contentDescription = "Delete record")
                 }
             }
             Spacer(Modifier.size(6.dp))
@@ -187,6 +264,23 @@ private fun RecordCard(
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.error,
                 )
+            }
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.End,
+            ) {
+                IconButton(onClick = onCopy) {
+                    Icon(AppIcons.ContentCopy, contentDescription = "Copy coordinates")
+                }
+                IconButton(onClick = onShare) {
+                    Icon(AppIcons.Share, contentDescription = "Share spot")
+                }
+                IconButton(onClick = onOpenMap) {
+                    Icon(AppIcons.Map, contentDescription = "Open in map")
+                }
+                IconButton(onClick = onDelete) {
+                    Icon(AppIcons.Delete, contentDescription = "Delete record")
+                }
             }
         }
     }

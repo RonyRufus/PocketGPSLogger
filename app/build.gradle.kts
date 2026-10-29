@@ -8,12 +8,22 @@ android {
     namespace = "com.pocketgps.logger"
     compileSdk = 34
 
+    // Do not embed the Play-encrypted dependency blob; nothing here uses it.
+    dependenciesInfo {
+        includeInApk = false
+        includeInBundle = false
+    }
+
     defaultConfig {
         applicationId = "com.pocketgps.logger"
         minSdk = 26
         targetSdk = 34
-        versionCode = 1
-        versionName = "1.0.0"
+        versionCode = 2
+        versionName = "1.1.0"
+
+        // The UI is English-only. Strips every other translation AndroidX/Compose/Play
+        // libraries bundle (locale tables for 80+ languages) from the APK.
+        resourceConfigurations += "en"
     }
 
     buildTypes {
@@ -28,6 +38,11 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
+
+            // Sign with the debug keystore so `assembleRelease` produces an APK that
+            // installs directly, with no manual signing step. Swap to a real release
+            // keystore before publishing to Play (see README §6).
+            signingConfig = signingConfigs.getByName("debug")
 
             // The intended phone is ARM64. Restricting the *release* build to one ABI keeps
             // the native Vosk + JNA payload small. Debug builds keep every ABI packaged by the
@@ -61,8 +76,18 @@ android {
     }
 
     packaging {
+        // Store native libs DEFLATE-compressed inside the APK. libvosk.so (~8.9 MB raw)
+        // compresses to roughly half, halving download size for sideloads. Cost: libs are
+        // extracted at install time (one-time) and first load is marginally slower.
+        jniLibs {
+            useLegacyPackaging = true
+        }
         resources {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
+            // Coroutine debug-probe metadata and library version text files are
+            // developer-only; none of it is needed at runtime.
+            excludes += "DebugProbesKt.bin"
+            excludes += "/META-INF/*.version"
         }
     }
 
@@ -83,7 +108,8 @@ dependencies {
 
     // AndroidX core
     implementation("androidx.core:core-ktx:1.13.1")
-    implementation("androidx.appcompat:appcompat:1.7.0")
+    // NOTE: appcompat removed — MainActivity is a ComponentActivity and the XML theme
+    // extends the platform Theme.Material, so the ~1 MB library was dead weight.
 
     // Lifecycle
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.3")
@@ -98,8 +124,8 @@ dependencies {
     implementation("androidx.compose.ui:ui-graphics")
     implementation("androidx.compose.foundation:foundation")
     implementation("androidx.compose.material3:material3")
-    implementation("androidx.compose.material:material-icons-extended")
-    implementation("androidx.activity:activity-compose:1.9.0")
+    // NOTE: material-icons-extended removed — the 15 icons used are defined by hand in
+    // ui/icons/AppIcons.kt with the same path data. Keeps only what is on screen.
     implementation("androidx.navigation:navigation-compose:2.7.7")
 
     // Room

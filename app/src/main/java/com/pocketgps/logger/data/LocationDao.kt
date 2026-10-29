@@ -11,6 +11,9 @@ import kotlinx.coroutines.flow.Flow
  *
  * The UI observes [observeAll] / [observeLatest] as cold Flows. The service inserts on an IO
  * dispatcher; Room's Flow invalidation pushes the change back to the UI automatically.
+ *
+ * Count-only queries ([observeCount], [countBetween]) let the UI show stats without ever
+ * materialising full rows into memory.
  */
 @Dao
 interface LocationDao {
@@ -33,6 +36,25 @@ interface LocationDao {
             "ORDER BY location_timestamp DESC LIMIT 1"
     )
     fun observeLatestFresh(): Flow<LocationRecord?>
+
+    /** Live count of stored records — O(1) index scan, no rows materialised. */
+    @Query("SELECT COUNT(*) FROM location_records")
+    fun observeCount(): Flow<Int>
+
+    /** Number of records whose trigger time is in [fromMs, toMs). */
+    @Query(
+        "SELECT COUNT(*) FROM location_records " +
+            "WHERE trigger_timestamp >= :fromMs AND trigger_timestamp < :toMs",
+    )
+    suspend fun countBetween(fromMs: Long, toMs: Long): Int
+
+    /** Records saved strictly before [beforeMs], newest first (used for paged export). */
+    @Query("SELECT * FROM location_records WHERE trigger_timestamp < :beforeMs ORDER BY trigger_timestamp ASC")
+    suspend fun listBefore(beforeMs: Long): List<LocationRecord>
+
+    /** All records, newest first, one-shot read (used by export). */
+    @Query("SELECT * FROM location_records ORDER BY trigger_timestamp ASC")
+    suspend fun listAll(): List<LocationRecord>
 
     /** Delete one record. */
     @Query("DELETE FROM location_records WHERE id = :id")

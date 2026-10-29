@@ -39,6 +39,14 @@ data class AppSettings(
     val maxAccuracyMeters: Float = 150f,
     /** Post-trigger cooldown to swallow duplicate recognitions of one utterance. */
     val cooldownSeconds: Int = 3,
+    /**
+     * While listening, keep a low-duty-cycle fused-location subscription alive so a trigger
+     * saves in ~1 s instead of waiting for a cold GPS fix. Costs a little battery, saves a lot
+     * of waiting. The subscription uses balanced power accuracy, not continuous high accuracy.
+     */
+    val gpsPreWarm: Boolean = true,
+    /** Vibrate once on a saved spot and twice on failure. Useful when cues can't be heard. */
+    val hapticFeedback: Boolean = true,
 ) {
     companion object {
         const val DEFAULT_TRIGGER_PHRASE = "save spot"

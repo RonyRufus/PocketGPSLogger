@@ -7,10 +7,14 @@ import android.content.pm.PackageManager
 import android.location.Location
 import android.location.LocationManager
 import android.os.Build
+import android.os.Looper
 import androidx.core.content.ContextCompat
 import com.google.android.gms.common.ConnectionResult
 import com.google.android.gms.common.GoogleApiAvailability
 import com.google.android.gms.location.FusedLocationProviderClient
+import com.google.android.gms.location.LocationCallback
+import com.google.android.gms.location.LocationRequest
+import com.google.android.gms.location.LocationResult
 import com.google.android.gms.location.LocationServices
 import com.google.android.gms.location.Priority
 import com.google.android.gms.tasks.CancellationTokenSource
@@ -30,6 +34,11 @@ import kotlin.coroutines.resume
  *    already fuses GPS + Wi-Fi + cell).
  *  - Fallback backend: platform [LocationManager] last-known fix, used when Play Services is
  *    unavailable or returns nothing.
+ *  - **Pre-warm**: while hands-free listening is active, [startPreWarm] subscribes to a
+ *    balanced-power location stream (default every ~30 s). The fix stays "warm", so when the
+ *    trigger fires a save usually completes in about a second instead of waiting for a cold
+ *    GPS lock. The subscription is deliberately *not* high accuracy: it tops up the cached-fix
+ *    pool at minimal battery cost, and the on-trigger request still uses high accuracy.
  *  - The caller must invoke this from an IO coroutine; it never touches the audio thread.
  */
 class LocationAcquirer(private val context: Context) {
@@ -58,6 +67,49 @@ class LocationAcquirer(private val context: Context) {
     private val locationManager: LocationManager? =
         context.getSystemService(LocationManager::class.java)
 
+    // ------------------------------------------------------------------ pre-warm
+
+    @Volatile private var lastWarmFix: Location? = null
+    private var preWarmCallback: LocationCallback? = null
+
+    /**
+     * Begin a low-duty-cycle location subscription so cached fixes stay fresh while listening.
+     * Safe to call repeatedly; does nothing without Play Services or the location permission.
+     */
+    @SuppressLint("MissingPermission") // permission checked explicitly below
+    fun startPreWarm() {
+        if (preWarmCallback != null) return
+        val client = fused ?: return
+        if (!hasPermission()) return
+        val request = LocationRequest.Builder(
+            Priority.PRIORITY_BALANCED_POWER_ACCURACY,
+            PRE_WARM_INTERVAL_MS,
+        ).apply {
+            setMinUpdateIntervalMillis(PRE_WARM_INTERVAL_MS / 2)
+            setMaxUpdateDelayMillis(PRE_WARM_INTERVAL_MS * 2)
+        }.build()
+        val callback = object : LocationCallback() {
+            override fun onLocationResult(result: LocationResult) {
+                result.lastLocation?.let { lastWarmFix = it }
+            }
+        }
+        val registered = runCatching {
+            client.requestLocationUpdates(request, callback, Looper.getMainLooper())
+        }.isSuccess
+        if (registered) preWarmCallback = callback
+    }
+
+    /** Stop the pre-warm subscription and drop the warm fix. Safe to call repeatedly. */
+    fun stopPreWarm() {
+        preWarmCallback?.let { cb -> runCatching { fused?.removeLocationUpdates(cb) } }
+        preWarmCallback = null
+        lastWarmFix = null
+    }
+
+    val isPreWarmActive: Boolean get() = preWarmCallback != null
+
+    // ------------------------------------------------------------------ permission / providers
+
     private fun playServicesAvailable(): Boolean =
         runCatching {
             GoogleApiAvailability.getInstance()
@@ -82,10 +134,11 @@ class LocationAcquirer(private val context: Context) {
      * Try to obtain a usable fix for a trigger detected at [triggerTimestampMs].
      *
      * Order:
-     *  1. If policy is PREFER_RECENT and a cached fix is fresh + accurate enough → CACHED.
+     *  1. If policy is PREFER_RECENT and the best cached fix (pre-warm stream, fused
+     *     last-known, platform last-known) is fresh + accurate enough → CACHED.
      *  2. Request a fresh fix bounded by `gpsTimeoutSeconds`.
-     *  3. If the fresh fix is missing or absurdly inaccurate, fall back to the last known fix
-     *     (explicitly FALLBACK, carrying its age) when policy allows.
+     *  3. If the fresh fix is missing or unusably inaccurate, fall back to the best known fix
+     *     (explicitly FALLBACK, carrying its age).
      *  4. Otherwise report Unavailable.
      */
     @SuppressLint("MissingPermission")
@@ -100,7 +153,7 @@ class LocationAcquirer(private val context: Context) {
             return@withContext Result.Unavailable("GPS / location services are disabled")
         }
 
-        val cached = lastKnownLocation()
+        val cached = bestKnownLocation()
 
         // 1. Prefer a recent, accurate cached fix.
         if (settings.cachedLocationPolicy == CachedLocationPolicy.PREFER_RECENT && cached != null) {
@@ -127,7 +180,7 @@ class LocationAcquirer(private val context: Context) {
             }
             // Fresh but poor accuracy. Prefer a better cached fix if one exists, else return the
             // fresh fix (the UI flags poor accuracy) unless it is clearly meaningless.
-            if (cached != null && (cached.accuracy <= fresh.accuracy)) {
+            if (cached != null && cached.accuracy <= fresh.accuracy) {
                 return@withContext Result.Success(
                     toFix(cached, LocationSource.FALLBACK, ageSeconds(cached, triggerTimestampMs)),
                 )
@@ -142,8 +195,9 @@ class LocationAcquirer(private val context: Context) {
             )
         }
 
-        // 3. Fallback to last known.
-        if (cached != null && settings.cachedLocationPolicy == CachedLocationPolicy.PREFER_RECENT) {
+        // 3. Fresh request timed out. Any known fix — even a stale one — is more useful to the
+        //    user than nothing, and the record is explicitly flagged with its age.
+        if (cached != null) {
             val age = ageSeconds(cached, triggerTimestampMs)
             return@withContext Result.Success(toFix(cached, LocationSource.FALLBACK, age))
         }
@@ -225,7 +279,7 @@ class LocationAcquirer(private val context: Context) {
                         extras: android.os.Bundle?,
                     ) = Unit
                 }
-                lm.requestSingleUpdate(provider, listener, android.os.Looper.getMainLooper())
+                lm.requestSingleUpdate(provider, listener, Looper.getMainLooper())
                 cont.invokeOnCancellation {
                     runCatching { lm.removeUpdates(listener) }
                 }
@@ -233,22 +287,28 @@ class LocationAcquirer(private val context: Context) {
         }.getOrNull()
     }
 
+    /**
+     * The freshest known fix from all sources: the pre-warm stream, the fused last-known cache,
+     * and the platform providers. Returns null when none of them ever produced a fix.
+     */
     @SuppressLint("MissingPermission")
-    private fun lastKnownLocation(): Location? {
+    private fun bestKnownLocation(): Location? {
+        val candidates = mutableListOf<Location>()
+        lastWarmFix?.let { candidates += it }
         fused?.lastLocation?.let { task ->
             // Blocking here is acceptable: we are already on Dispatchers.IO and the task is
-            // normally already complete (cached). Guard with a short bounded await.
-            val loc = runCatching { com.google.android.gms.tasks.Tasks.await(task) }.getOrNull()
-            if (loc != null) return loc
+            // normally already complete (cached). Guard with a bounded await via runCatching.
+            runCatching { com.google.android.gms.tasks.Tasks.await(task) }.getOrNull()
+                ?.let { candidates += it }
         }
-        val lm = locationManager ?: return null
-        val candidates = listOf(
+        val lm = locationManager ?: return candidates.maxByOrNull { it.time }
+        listOf(
             LocationManager.GPS_PROVIDER,
             LocationManager.NETWORK_PROVIDER,
             LocationManager.PASSIVE_PROVIDER,
         ).mapNotNull { provider ->
             runCatching { lm.getLastKnownLocation(provider) }.getOrNull()
-        }
+        }.forEach { candidates += it }
         return candidates.maxByOrNull { it.time }
     }
 
@@ -274,5 +334,8 @@ class LocationAcquirer(private val context: Context) {
     companion object {
         /** Beyond this, a fix is not a location so much as a guess. */
         const val ABSURD_ACCURACY_METERS = 1000f
+
+        /** Pre-warm subscription cadence: frequent enough to stay warm, rare enough to be cheap. */
+        const val PRE_WARM_INTERVAL_MS = 30_000L
     }
 }

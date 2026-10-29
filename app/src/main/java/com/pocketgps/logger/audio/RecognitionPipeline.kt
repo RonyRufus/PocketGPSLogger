@@ -9,10 +9,12 @@ package com.pocketgps.logger.audio
  *  - [buffer] is allocated once; the per-chunk path performs no heap allocation.
  *  - JSON parsing happens only when Vosk emits a final result.
  *  - GPS work is **never** done here; [onTrigger] merely hands off to the service.
+ *  - A [VoiceGate] skips the recognizer during sustained silence, so a pocket-mounted phone
+ *    spends almost no CPU until something actually sounds like speech.
  *
  * Duplicate suppression:
- *  - Final-result words are kept in a short rolling buffer so a phrase split across two Vosk
- *    segments still matches.
+ *  - Final-result words are kept in a short rolling buffer (wall-clock bounded) so a phrase
+ *    split across two Vosk segments still matches.
  *  - A matched phrase clears the buffer and starts a cooldown, so one utterance can never
  *    create two records.
  */
@@ -58,7 +60,11 @@ class RecognitionPipeline(
     private val buffer = ShortArray(chunkSize)
     private val zeros = ShortArray(chunkSize)
 
-    private val recentWords = ArrayDeque<RecognitionEvent>()
+    /** Energy gate deciding when the recognizer is worth feeding. Audio thread only. */
+    val voiceGate = VoiceGate()
+
+    private val recentWords = ArrayDeque<RecentWord>()
+    /** Rolling window in *wall-clock* seconds — not stream time, which stalls while gated. */
     private val maxRecentSeconds = 4f
 
     private var cooldownUntilNs = 0L
@@ -84,17 +90,28 @@ class RecognitionPipeline(
         }
 
         trackMute(n)
+        val rms = computeRms(n)
+
+        val suppressed = isSuppressed()
+        if (suppressed) {
+            // While our own cue plays, drain real audio but feed silence so the app never
+            // transcribes itself. The gate is closed during the window; real speech reopens it.
+            voiceGate.forceClose()
+            spotter.acceptWaveForm(zeros, 0, n)
+            return true
+        }
+
+        if (!voiceGate.process(rms)) {
+            // Sustained silence: skip the expensive recognizer work for this chunk. The Vosk
+            // stream simply does not advance; the next active chunk resumes exactly where the
+            // stream left off, so matching across the pause still works.
+            return true
+        }
 
         val t0 = clock()
-        val suppressed = isSuppressed()
-        val events = if (suppressed) {
-            // Keep the Vosk stream clock advancing without feeding our own cue audio.
-            spotter.acceptWaveForm(zeros, 0, n)
-        } else {
-            spotter.acceptWaveForm(buffer, 0, n)
-        }
+        val events = spotter.acceptWaveForm(buffer, 0, n)
         val elapsedMs = (clock() - t0) / 1_000_000f
-        onChunkProcessed?.invoke(elapsedMs, computeRms(n))
+        onChunkProcessed?.invoke(elapsedMs, rms)
 
         if (events.isNotEmpty()) {
             handleFinalWords(events)
@@ -105,14 +122,19 @@ class RecognitionPipeline(
     }
 
     private fun handleFinalWords(events: List<RecognitionEvent>) {
-        events.forEach { recentWords.addLast(it) }
-        val nowSec = spotter.streamSeconds()
-        while (recentWords.isNotEmpty() && nowSec - recentWords.first().endStreamSeconds > maxRecentSeconds) {
+        val wallNs = clock()
+        events.forEach { recentWords.addLast(RecentWord(it, wallNs)) }
+        // Expire by wall clock. With the voice gate stalling the Vosk stream during silence,
+        // stream-time expiry could pair a half-spoken word with another utterance minutes
+        // later; wall-clock expiry keeps the split-phrase window honestly ~4 s wide.
+        while (recentWords.isNotEmpty() &&
+            (wallNs - recentWords.first().wallNanos) > maxRecentSeconds * 1_000_000_000L
+        ) {
             recentWords.removeFirst()
         }
         if (recentWords.isEmpty()) return
 
-        val words = recentWords.map { it.word }
+        val words = recentWords.map { it.event.word }
         if (!TriggerMatcher.matchesTokens(words, triggerTokens)) return
 
         // Match found. Compute confidence only over the tail words that form the phrase.
@@ -150,8 +172,11 @@ class RecognitionPipeline(
         val start = maxOf(0, recentWords.size - count)
         val slice = recentWords.drop(start)
         if (slice.isEmpty()) return 0f
-        return slice.sumOf { it.confidence.toDouble() }.toFloat() / slice.size
+        return slice.sumOf { it.event.confidence.toDouble() }.toFloat() / slice.size
     }
+
+    /** A recognised word plus the wall-clock time it was captured. */
+    private data class RecentWord(val event: RecognitionEvent, val wallNanos: Long)
 
     private fun trackMute(n: Int) {
         var allZero = true

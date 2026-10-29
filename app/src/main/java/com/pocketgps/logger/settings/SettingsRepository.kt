@@ -3,6 +3,7 @@ package com.pocketgps.logger.settings
 import android.content.Context
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
+import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.floatPreferencesKey
 import androidx.datastore.preferences.core.intPreferencesKey
@@ -27,6 +28,8 @@ class SettingsRepository(private val context: Context) {
         val CACHE_MAX_AGE = intPreferencesKey("cached_max_age_seconds")
         val MAX_ACCURACY = floatPreferencesKey("max_accuracy_meters")
         val COOLDOWN = intPreferencesKey("cooldown_seconds")
+        val GPS_PRE_WARM = booleanPreferencesKey("gps_pre_warm")
+        val HAPTIC_FEEDBACK = booleanPreferencesKey("haptic_feedback")
     }
 
     val settings: Flow<AppSettings> = context.dataStore.data.map { prefs ->
@@ -47,6 +50,8 @@ class SettingsRepository(private val context: Context) {
             cooldownSeconds = prefs[Keys.COOLDOWN]
                 ?.coerceIn(AppSettings.MIN_COOLDOWN_SECONDS, AppSettings.MAX_COOLDOWN_SECONDS)
                 ?: defaults.cooldownSeconds,
+            gpsPreWarm = prefs[Keys.GPS_PRE_WARM] ?: defaults.gpsPreWarm,
+            hapticFeedback = prefs[Keys.HAPTIC_FEEDBACK] ?: defaults.hapticFeedback,
         )
     }
 
@@ -80,5 +85,13 @@ class SettingsRepository(private val context: Context) {
         it[Keys.COOLDOWN] = value.coerceIn(
             AppSettings.MIN_COOLDOWN_SECONDS, AppSettings.MAX_COOLDOWN_SECONDS,
         )
+    }
+
+    suspend fun setGpsPreWarm(value: Boolean) = context.dataStore.edit {
+        it[Keys.GPS_PRE_WARM] = value
+    }
+
+    suspend fun setHapticFeedback(value: Boolean) = context.dataStore.edit {
+        it[Keys.HAPTIC_FEEDBACK] = value
     }
 }

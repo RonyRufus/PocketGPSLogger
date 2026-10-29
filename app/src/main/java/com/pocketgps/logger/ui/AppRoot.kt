@@ -3,10 +3,6 @@ package com.pocketgps.logger.ui
 import android.Manifest
 import android.content.pm.PackageManager
 import androidx.compose.foundation.layout.padding
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Home
-import androidx.compose.material.icons.filled.Place
-import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.Icon
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
@@ -26,6 +22,7 @@ import com.pocketgps.logger.ServiceLocator
 import com.pocketgps.logger.ui.main.MainScreen
 import com.pocketgps.logger.ui.savedlocations.SavedLocationsScreen
 import com.pocketgps.logger.ui.settings.SettingsScreen
+import com.pocketgps.logger.ui.icons.AppIcons
 
 object Routes {
     const val SETUP = "setup"
@@ -65,19 +62,19 @@ fun AppRoot() {
                     NavigationBarItem(
                         selected = route == Routes.MAIN,
                         onClick = { navController.navigateTopLevel(Routes.MAIN) },
-                        icon = { Icon(Icons.Filled.Home, contentDescription = null) },
+                        icon = { Icon(AppIcons.Home, contentDescription = null) },
                         label = { Text("Main") },
                     )
                     NavigationBarItem(
                         selected = route == Routes.SAVED,
                         onClick = { navController.navigateTopLevel(Routes.SAVED) },
-                        icon = { Icon(Icons.Filled.Place, contentDescription = null) },
+                        icon = { Icon(AppIcons.Place, contentDescription = null) },
                         label = { Text("Saved") },
                     )
                     NavigationBarItem(
                         selected = route == Routes.SETTINGS,
                         onClick = { navController.navigateTopLevel(Routes.SETTINGS) },
-                        icon = { Icon(Icons.Filled.Settings, contentDescription = null) },
+                        icon = { Icon(AppIcons.Settings, contentDescription = null) },
                         label = { Text("Settings") },
                     )
                 }

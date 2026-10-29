@@ -1,6 +1,7 @@
 package com.pocketgps.logger.engine
 
 import com.pocketgps.logger.data.LocationRecord
+import com.pocketgps.logger.feedback.HapticCue
 import com.pocketgps.logger.location.LocationAcquirer
 import com.pocketgps.logger.location.LocationRepository
 import com.pocketgps.logger.audio.ConfirmationPlayer
@@ -22,12 +23,16 @@ import kotlinx.coroutines.withContext
  *  - [onTriggerDetected] is called from the audio thread and only flips a flag / launches work.
  *  - All GPS and Room work happens in [scope] on [Dispatchers.IO]; the audio loop is never blocked.
  *  - The UI observes [uiState]; the database is the single source of truth for saved records.
+ *
+ * The saved-record count is observed via a COUNT(*) query rather than materialising every row;
+ * with thousands of spots the UI costs the same as with ten.
  */
 class ListenerEngine(
     private val repository: LocationRepository,
     private val locationAcquirer: LocationAcquirer,
     private val confirmation: ConfirmationPlayer,
     private val scope: CoroutineScope,
+    private val haptics: HapticCue? = null,
 ) {
 
     private val _uiState = MutableStateFlow(ListenerUiState())
@@ -54,8 +59,8 @@ class ListenerEngine(
             }
         }
         scope.launch {
-            repository.observeAll().collect { all ->
-                _uiState.update { it.copy(savedCount = all.size) }
+            repository.observeCount().collect { count ->
+                _uiState.update { it.copy(savedCount = count) }
             }
         }
     }
@@ -151,15 +156,29 @@ class ListenerEngine(
      * [triggerTimestampMs] must be the wall-clock time of detection (not of the DB write).
      */
     fun onTriggerDetected(triggerTimestampMs: Long) {
+        startCapture(triggerTimestampMs, fromUserAction = false)
+    }
+
+    /**
+     * Save a spot immediately from a user action (the notification's "Save now" button).
+     * Runs the same capture pipeline as a voice trigger, so persistence and feedback
+     * semantics are identical.
+     */
+    fun saveNow() {
+        if (!active) return
+        startCapture(System.currentTimeMillis(), fromUserAction = true)
+    }
+
+    private fun startCapture(triggerTimestampMs: Long, fromUserAction: Boolean) {
         if (!active) return
         if (captureInProgress) return // one utterance has already started a capture
         captureInProgress = true
 
-        val phrase = settings.triggerPhrase
+        val phrase = if (fromUserAction) "manual save" else settings.triggerPhrase
         _uiState.update {
             it.copy(
                 state = ListenerState.CAPTURING,
-                statusMessage = "Getting location…",
+                statusMessage = if (fromUserAction) "Saving from button…" else "Getting location…",
                 lastEventAtMs = triggerTimestampMs,
             )
         }
@@ -170,7 +189,7 @@ class ListenerEngine(
                 when (result) {
                     is LocationAcquirer.Result.Success -> persist(triggerTimestampMs, phrase, result.fix)
                     is LocationAcquirer.Result.Unavailable -> {
-                        confirmation.playFailure()
+                        failCue()
                         if (active) {
                             _uiState.update {
                                 it.copy(
@@ -183,7 +202,7 @@ class ListenerEngine(
                     }
                 }
             } catch (t: Throwable) {
-                runCatching { confirmation.playFailure() }
+                failCue()
                 if (active) {
                     _uiState.update {
                         it.copy(
@@ -237,11 +256,12 @@ class ListenerEngine(
                     )
                 }
             }
-            // Persist first, then confirm. Audio is never the only indication of success.
+            // Persist first, then confirm. Audio/haptics are never the only indication of success.
+            if (settings.hapticFeedback) haptics?.success()
             confirmation.playSuccess()
         } else {
             // The DB did not confirm the write: never claim success.
-            runCatching { confirmation.playFailure() }
+            failCue()
             if (active) {
                 _uiState.update {
                     it.copy(
@@ -252,6 +272,11 @@ class ListenerEngine(
                 }
             }
         }
+    }
+
+    private fun failCue() {
+        if (settings.hapticFeedback) haptics?.failure()
+        runCatching { confirmation.playFailure() }
     }
 
     private fun buildWarning(fix: LocationAcquirer.Fix): String? {

@@ -16,14 +16,11 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.LocationOn
-import androidx.compose.material.icons.filled.PlayArrow
-import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -46,6 +43,7 @@ import com.pocketgps.logger.ui.common.LabeledValue
 import com.pocketgps.logger.ui.common.SectionCard
 import com.pocketgps.logger.ui.common.StatusDot
 import com.pocketgps.logger.ui.format.Formatters
+import com.pocketgps.logger.ui.icons.AppIcons
 
 @Composable
 fun MainScreen(
@@ -56,6 +54,7 @@ fun MainScreen(
     val latest by viewModel.latest.collectAsStateWithLifecycle()
     val count by viewModel.savedCount.collectAsStateWithLifecycle()
     val modelStatus by viewModel.modelStatus.collectAsStateWithLifecycle()
+    val manualSave by viewModel.manualSave.collectAsStateWithLifecycle()
 
     var hasMic by remember { mutableStateOf(viewModel.hasMicrophonePermission()) }
     var hasLocation by remember { mutableStateOf(viewModel.hasLocationPermission()) }
@@ -189,7 +188,7 @@ fun MainScreen(
             ),
         ) {
             Icon(
-                imageVector = if (engineState.isListening) Icons.Filled.Stop else Icons.Filled.PlayArrow,
+                imageVector = if (engineState.isListening) AppIcons.Stop else AppIcons.PlayArrow,
                 contentDescription = null,
                 modifier = Modifier.size(28.dp),
             )
@@ -199,6 +198,62 @@ fun MainScreen(
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.SemiBold,
             )
+        }
+
+        OutlinedButton(
+            onClick = viewModel::saveSpotNow,
+            enabled = hasLocation && gpsReady && manualSave != MainViewModel.ManualSaveOp.Working,
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(min = 52.dp),
+            shape = RoundedCornerShape(16.dp),
+        ) {
+            if (manualSave == MainViewModel.ManualSaveOp.Working) {
+                androidx.compose.material3.CircularProgressIndicator(
+                    modifier = Modifier.size(20.dp),
+                    strokeWidth = 2.dp,
+                )
+                Spacer(Modifier.size(12.dp))
+                Text("Saving spot…")
+            } else {
+                Icon(
+                    AppIcons.LocationOn,
+                    contentDescription = null,
+                    modifier = Modifier.size(22.dp),
+                )
+                Spacer(Modifier.size(12.dp))
+                Text("Save spot now (no voice)")
+            }
+        }
+
+        when (val op = manualSave) {
+            is MainViewModel.ManualSaveOp.Done -> SectionCard(title = "Spot saved") {
+                Text(
+                    Formatters.coordinates(op.record.latitude, op.record.longitude),
+                    style = MaterialTheme.typography.bodyLarge,
+                    fontWeight = FontWeight.Medium,
+                )
+                Text(
+                    Formatters.timestamp(op.record.triggerTimestamp) +
+                        "  •  " + Formatters.accuracy(op.record.accuracyMeters),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.height(4.dp))
+                TextButton(onClick = viewModel::clearManualSaveOp) { Text("Dismiss") }
+            }
+
+            is MainViewModel.ManualSaveOp.Failed -> SectionCard(title = "Could not save") {
+                Text(
+                    op.reason,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.error,
+                )
+                Spacer(Modifier.height(4.dp))
+                TextButton(onClick = viewModel::clearManualSaveOp) { Text("Dismiss") }
+            }
+
+            else -> Unit
         }
 
         SectionCard(title = "Status") {
@@ -228,7 +283,7 @@ fun MainScreen(
             } else {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Icon(
-                        Icons.Filled.LocationOn,
+                        AppIcons.LocationOn,
                         contentDescription = null,
                         tint = MaterialTheme.colorScheme.primary,
                     )

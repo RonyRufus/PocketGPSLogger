@@ -15,9 +15,6 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.CheckCircle
-import androidx.compose.material.icons.filled.RadioButtonUnchecked
 import androidx.compose.material3.Button
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
@@ -42,6 +39,7 @@ import com.pocketgps.logger.audio.TriggerMatcher
 import com.pocketgps.logger.model.ModelManager
 import com.pocketgps.logger.ui.common.SectionCard
 import java.util.Locale
+import com.pocketgps.logger.ui.icons.AppIcons
 
 @Composable
 fun SetupScreen(
@@ -324,7 +322,7 @@ private fun PermissionRow(label: String, granted: Boolean, onRequest: () -> Unit
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Icon(
-            imageVector = if (granted) Icons.Filled.CheckCircle else Icons.Filled.RadioButtonUnchecked,
+            imageVector = if (granted) AppIcons.CheckCircle else AppIcons.RadioButtonUnchecked,
             contentDescription = null,
             tint = if (granted) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error,
         )
@@ -340,7 +338,7 @@ private fun PermissionRow(label: String, granted: Boolean, onRequest: () -> Unit
 private fun StatusLine(text: String, ok: Boolean) {
     Row(verticalAlignment = Alignment.CenterVertically) {
         Icon(
-            imageVector = if (ok) Icons.Filled.CheckCircle else Icons.Filled.RadioButtonUnchecked,
+            imageVector = if (ok) AppIcons.CheckCircle else AppIcons.RadioButtonUnchecked,
             contentDescription = null,
             tint = if (ok) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error,
             modifier = Modifier.size(18.dp),

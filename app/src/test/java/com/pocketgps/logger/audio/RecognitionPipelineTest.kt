@@ -51,7 +51,8 @@ class RecognitionPipelineTest {
         script: List<List<RecognitionEvent>>,
         clock: () -> Long,
     ): Pair<RecognitionPipeline, MutableList<Long>> {
-        val chunks = List(script.size) { ShortArray(2048) { 1 } }
+        // Amplitude 3000 → RMS ≈ 0.09, comfortably above the voice gate's open threshold.
+        val chunks = List(script.size) { ShortArray(2048) { 3000 } }
         val triggers = mutableListOf<Long>()
         val pl = RecognitionPipeline(
             audio = FakeAudioSource(chunks),

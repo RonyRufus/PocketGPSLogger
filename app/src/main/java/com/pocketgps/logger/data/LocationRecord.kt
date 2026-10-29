@@ -2,6 +2,7 @@ package com.pocketgps.logger.data
 
 import androidx.room.ColumnInfo
 import androidx.room.Entity
+import androidx.room.Index
 import androidx.room.PrimaryKey
 
 /**
@@ -9,8 +10,18 @@ import androidx.room.PrimaryKey
  *
  * One row is written per accepted trigger. Rows are only written after the GPS fix has been
  * acquired and the insert has been confirmed by Room.
+ *
+ * Indexes: the list and latest queries sort by [triggerTimestamp] and the cached-candidate
+ * query filters on [locationSource]; both columns are therefore indexed (v2, migration
+ * [LocationDatabase.MIGRATION_V1_V2]) so the UI stays smooth as the record count grows.
  */
-@Entity(tableName = "location_records")
+@Entity(
+    tableName = "location_records",
+    indices = [
+        Index(value = ["trigger_timestamp"]),
+        Index(value = ["location_source", "location_timestamp"]),
+    ],
+)
 data class LocationRecord(
     /** Unique, auto-generated row identifier. */
     @PrimaryKey(autoGenerate = true) val id: Long = 0L,
@@ -40,6 +51,6 @@ data class LocationRecord(
     /** "success" once committed. Failure rows are never inserted. */
     @ColumnInfo(name = "save_status") val saveStatus: String,
 
-    /** Reserved for future expansion; always null in v1. */
+    /** Optional warnings attached at save time, e.g. stale fix or poor accuracy. */
     @ColumnInfo(name = "notes") val notes: String? = null,
 )

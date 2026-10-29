@@ -18,6 +18,15 @@ class LocationRepository(private val dao: LocationDao) {
 
     fun observeLatestFresh(): Flow<LocationRecord?> = dao.observeLatestFresh()
 
+    /** Live record count without materialising rows — cheaper than observing all records. */
+    fun observeCount(): Flow<Int> = dao.observeCount()
+
+    /** Number of records saved in [fromMs, toMs). */
+    suspend fun countBetween(fromMs: Long, toMs: Long): Int = dao.countBetween(fromMs, toMs)
+
+    /** One-shot read of every record ordered oldest → newest (for export). */
+    suspend fun listAll(): List<LocationRecord> = dao.listAll()
+
     /** Insert and return the generated id. Throws if the write fails. */
     suspend fun insert(record: LocationRecord): Long = dao.insert(record)
 

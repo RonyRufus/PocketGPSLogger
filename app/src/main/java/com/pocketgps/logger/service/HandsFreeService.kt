@@ -29,6 +29,7 @@ import com.pocketgps.logger.engine.EngineProvider
 import com.pocketgps.logger.engine.ListenerEngine
 import com.pocketgps.logger.engine.ListenerState
 import com.pocketgps.logger.engine.ListenerUiState
+import com.pocketgps.logger.feedback.HapticCue
 import com.pocketgps.logger.location.LocationAcquirer
 import com.pocketgps.logger.settings.AppSettings
 import com.pocketgps.logger.settings.SettingsRepository
@@ -65,6 +66,7 @@ class HandsFreeService : android.app.Service() {
         const val CHANNEL_ID = "hands_free_listening"
         const val ACTION_START = "com.pocketgps.logger.action.START"
         const val ACTION_STOP = "com.pocketgps.logger.action.STOP"
+        const val ACTION_SAVE_NOW = "com.pocketgps.logger.action.SAVE_NOW"
 
         private const val NOTIFICATION_ID = 1001
         private const val WAKELOCK_TAG = "PocketGPSLogger::Listening"
@@ -149,6 +151,7 @@ class HandsFreeService : android.app.Service() {
             locationAcquirer = locationAcquirer,
             confirmation = confirmation,
             scope = scope,
+            haptics = HapticCue(this),
         )
         engine.startObservingDatabase()
         EngineProvider.set(engine)
@@ -163,6 +166,14 @@ class HandsFreeService : android.app.Service() {
             // A stop request may arrive while listening (already foreground) or after the
             // process was recreated by the system; stopListening() is safe in both cases.
             stopListening()
+            return START_NOT_STICKY
+        }
+
+        if (intent?.action == ACTION_SAVE_NOW) {
+            // Manual save from the notification. The service is already foreground here;
+            // if the engine is not listening yet, saveNow() is a no-op.
+            engine.saveNow()
+            updateNotification()
             return START_NOT_STICKY
         }
 
@@ -220,6 +231,9 @@ class HandsFreeService : android.app.Service() {
             }
         }
 
+        // Keep the fix warm so a voice trigger saves in ~1 s instead of a cold 10–15 s lock.
+        if (currentSettings.gpsPreWarm) locationAcquirer.startPreWarm()
+
         notificationJob?.cancel()
         notificationJob = scope.launch {
             engine.uiState.map { it.state }.distinctUntilChanged().collect {
@@ -249,6 +263,7 @@ class HandsFreeService : android.app.Service() {
         settingsJob?.cancel(); settingsJob = null
         notificationJob?.cancel(); notificationJob = null
         wakeLockJob?.cancel(); wakeLockJob = null
+        locationAcquirer.stopPreWarm()
         releaseAudio()
         releaseWakeLock()
         engine.markDisabled()
@@ -378,6 +393,12 @@ class HandsFreeService : android.app.Service() {
     private fun onSettingsChanged(settings: AppSettings) {
         currentSettings = settings
         engine.updateSettings(settings)
+        // Pre-warm follows its toggle live; the subscription is idempotent.
+        if (settings.gpsPreWarm && listeningActive) {
+            locationAcquirer.startPreWarm()
+        } else if (!settings.gpsPreWarm) {
+            locationAcquirer.stopPreWarm()
+        }
         if (!confirmation.isPlaying()) {
             confirmation.setMode(settings.confirmationMode)
         }
@@ -552,8 +573,13 @@ class HandsFreeService : android.app.Service() {
             Intent(this, MainActivity::class.java),
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )
-        val stopIntent = PendingIntent.getService(
+        val saveIntent = PendingIntent.getService(
             this, 1,
+            Intent(this, HandsFreeService::class.java).setAction(ACTION_SAVE_NOW),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+        )
+        val stopIntent = PendingIntent.getService(
+            this, 2,
             Intent(this, HandsFreeService::class.java).setAction(ACTION_STOP),
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )
@@ -568,6 +594,7 @@ class HandsFreeService : android.app.Service() {
             .setCategory(NotificationCompat.CATEGORY_SERVICE)
             .setPriority(NotificationCompat.PRIORITY_LOW)
             .setContentIntent(contentIntent)
+            .addAction(0, "Save spot now", saveIntent)
             .addAction(0, "Stop listening", stopIntent)
             .apply {
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {

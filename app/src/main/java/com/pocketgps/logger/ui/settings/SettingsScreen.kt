@@ -13,10 +13,6 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.Delete
-import androidx.compose.material.icons.filled.Remove
 import androidx.compose.material3.Button
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -46,6 +42,7 @@ import com.pocketgps.logger.settings.ConfirmationMode
 import com.pocketgps.logger.ui.common.LabeledValue
 import com.pocketgps.logger.ui.common.SectionCard
 import java.util.Locale
+import com.pocketgps.logger.ui.icons.AppIcons
 
 @Composable
 fun SettingsScreen(
@@ -150,6 +147,21 @@ fun SettingsScreen(
                 onDecrease = { viewModel.setCooldown(settings.cooldownSeconds - 1) },
                 onIncrease = { viewModel.setCooldown(settings.cooldownSeconds + 1) },
             )
+            Spacer(Modifier.height(4.dp))
+            SwitchRow(
+                title = "Fast saves (GPS pre-warm)",
+                subtitle = "While listening, keep a low-power location feed alive so a " +
+                    "trigger saves in about a second. Costs a little battery.",
+                checked = settings.gpsPreWarm,
+                onCheckedChange = viewModel::setGpsPreWarm,
+            )
+            SwitchRow(
+                title = "Vibrate on save",
+                subtitle = "One pulse when a spot is saved, two when it fails — useful when " +
+                    "you can't hear the confirmation.",
+                checked = settings.hapticFeedback,
+                onCheckedChange = viewModel::setHapticFeedback,
+            )
         }
 
         SectionCard(title = "Speech model") {
@@ -191,7 +203,7 @@ fun SettingsScreen(
             if (ready) {
                 Spacer(Modifier.height(8.dp))
                 TextButton(onClick = viewModel::deleteModel, enabled = !sessionActive) {
-                    Icon(Icons.Filled.Delete, contentDescription = null)
+                    Icon(AppIcons.Delete, contentDescription = null)
                     Spacer(Modifier.width(4.dp))
                     Text("Delete model")
                 }
@@ -266,6 +278,38 @@ private fun TriggerPhraseSection(current: String, onSave: (String) -> Unit) {
 }
 
 @Composable
+private fun SwitchRow(
+    title: String,
+    subtitle: String,
+    checked: Boolean,
+    onCheckedChange: (Boolean) -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(Modifier.weight(1f)) {
+            Text(
+                title,
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = FontWeight.Medium,
+            )
+            Text(
+                subtitle,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        androidx.compose.material3.Switch(
+            checked = checked,
+            onCheckedChange = onCheckedChange,
+        )
+    }
+}
+
+@Composable
 private fun RadioRow(label: String, selected: Boolean, onClick: () -> Unit) {
     Row(
         modifier = Modifier
@@ -297,7 +341,7 @@ private fun StepperRow(
             modifier = Modifier.weight(1f),
         )
         IconButton(onClick = onDecrease) {
-            Icon(Icons.Filled.Remove, contentDescription = "Decrease")
+            Icon(AppIcons.Remove, contentDescription = "Decrease")
         }
         Text(
             value,
@@ -306,7 +350,7 @@ private fun StepperRow(
             modifier = Modifier.width(64.dp),
         )
         IconButton(onClick = onIncrease) {
-            Icon(Icons.Filled.Add, contentDescription = "Increase")
+            Icon(AppIcons.Add, contentDescription = "Increase")
         }
     }
 }
