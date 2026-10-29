@@ -79,12 +79,16 @@ class HandsFreeService : android.app.Service() {
          * crash the process on Android 14.
          */
         fun start(context: Context) {
+            val appContext = context.applicationContext
             val granted = ContextCompat.checkSelfPermission(
-                context, android.Manifest.permission.RECORD_AUDIO,
+                appContext, android.Manifest.permission.RECORD_AUDIO,
             ) == PackageManager.PERMISSION_GRANTED
             if (!granted) return
-            val intent = Intent(context, HandsFreeService::class.java).setAction(ACTION_START)
-            runCatching { ContextCompat.startForegroundService(context, intent) }
+
+            val intent = Intent(appContext, HandsFreeService::class.java).setAction(ACTION_START)
+            // Never let a platform start restriction or OEM exception crash the caller UI.
+            // The service reports runtime initialization errors through its persistent state.
+            runCatching { ContextCompat.startForegroundService(appContext, intent) }
         }
 
         /**
@@ -177,8 +181,19 @@ class HandsFreeService : android.app.Service() {
             return START_NOT_STICKY
         }
 
-        startForegroundCompat(includeMicrophoneType = true)
-        startListening()
+        try {
+            // Must be promoted immediately after startForegroundService(), before loading Vosk
+            // or opening the microphone. On Android 14 this can throw when the OS disallows
+            // microphone FGS startup; handle that without leaving an orphaned service.
+            startForegroundCompat(includeMicrophoneType = true)
+            startListening()
+        } catch (t: Throwable) {
+            runCatching { engine.onError("Could not start hands-free mode: ${t.message ?: t.javaClass.simpleName}") }
+            runCatching { releaseAudio() }
+            runCatching { releaseWakeLock() }
+            runCatching { ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE) }
+            stopSelf(startId)
+        }
         return START_NOT_STICKY
     }
 
