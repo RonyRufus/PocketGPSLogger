@@ -24,8 +24,11 @@ class MicAudioSource(
     private var record: AudioRecord? = null
 
     /** Allocates the AudioRecord. Throws [MicException] if the hardware refuses. */
+    @Synchronized
     fun ensureInitialized() {
-        if (record != null) return
+        if (record?.state == AudioRecord.STATE_INITIALIZED) return
+        // Discard a stale/uninitialized recorder before attempting a fresh allocation.
+        releaseRecord()
         val minBuf = AudioRecord.getMinBufferSize(
             sampleRate, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT,
         )
@@ -33,42 +36,68 @@ class MicAudioSource(
             throw MicException("AudioRecord.getMinBufferSize returned $minBuf")
         }
         val bufferBytes = maxOf(minBuf * 2, chunkSize * 4)
-        val audioRecord = AudioRecord(
-            MediaRecorder.AudioSource.VOICE_RECOGNITION,
-            sampleRate,
-            AudioFormat.CHANNEL_IN_MONO,
-            AudioFormat.ENCODING_PCM_16BIT,
-            bufferBytes,
-        )
+        val audioRecord = try {
+            AudioRecord(
+                MediaRecorder.AudioSource.VOICE_RECOGNITION,
+                sampleRate,
+                AudioFormat.CHANNEL_IN_MONO,
+                AudioFormat.ENCODING_PCM_16BIT,
+                bufferBytes,
+            )
+        } catch (t: RuntimeException) {
+            throw MicException("AudioRecord construction failed: ${t.message ?: t.javaClass.simpleName}")
+        }
         if (audioRecord.state != AudioRecord.STATE_INITIALIZED) {
-            audioRecord.release()
+            runCatching { audioRecord.release() }
             throw MicException("AudioRecord failed to initialize (permission or hardware busy)")
         }
         record = audioRecord
     }
 
+    @Synchronized
     override fun start() {
         ensureInitialized()
         val r = record ?: throw MicException("not initialized")
-        if (r.recordingState != AudioRecord.RECORDSTATE_RECORDING) {
+        if (r.recordingState == AudioRecord.RECORDSTATE_RECORDING) return
+        try {
             r.startRecording()
+            if (r.recordingState != AudioRecord.RECORDSTATE_RECORDING) {
+                throw MicException("AudioRecord did not enter RECORDSTATE_RECORDING")
+            }
+        } catch (t: RuntimeException) {
+            // If startRecording fails, release the native audio resource here. The service assigns
+            // this source only after start() returns, so its normal cleanup cannot see this object.
+            releaseRecord()
+            if (t is MicException) throw t
+            throw MicException("AudioRecord start failed: ${t.message ?: t.javaClass.simpleName}")
         }
     }
 
     override fun read(dest: ShortArray, offset: Int, length: Int): Int {
         val r = record ?: return -1
-        val n = r.read(dest, offset, length)
-        return if (n >= 0) n else -1
+        return try {
+            val n = r.read(dest, offset, length)
+            if (n >= 0) n else n
+        } catch (t: IllegalStateException) {
+            -1
+        }
     }
 
+    @Synchronized
     override fun stop() {
-        record?.let { r ->
+        releaseRecord()
+    }
+
+    @Synchronized
+    private fun releaseRecord() {
+        val r = record
+        record = null
+        if (r != null) {
             runCatching {
                 if (r.recordingState == AudioRecord.RECORDSTATE_RECORDING) r.stop()
             }
-            r.release()
+            runCatching { r.release() }
         }
-        record = null
     }
 
     class MicException(message: String) : IllegalStateException(message)
