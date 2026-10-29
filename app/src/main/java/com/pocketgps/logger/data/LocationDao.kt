@@ -35,7 +35,7 @@ interface LocationDao {
     fun observeLatestFresh(): Flow<LocationRecord?>
 
     /** Attach a completed offline voice note to its matching GPS capture. */
-    @Query("UPDATE location_records SET notes = :notes WHERE trigger_timestamp = :triggerTimestamp")
+    @Query("UPDATE location_records SET notes = CASE WHEN notes IS NULL OR notes = '' THEN :notes WHEN instr(notes, :notes) > 0 THEN notes ELSE notes || char(10) || :notes END WHERE trigger_timestamp = :triggerTimestamp")
     suspend fun updateNotesForTrigger(triggerTimestamp: Long, notes: String): Int
 
     /** Delete one record. */
