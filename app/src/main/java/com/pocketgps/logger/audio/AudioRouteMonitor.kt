@@ -20,18 +20,19 @@ class AudioRouteMonitor(context: Context) {
         val outputSummary: String?,
     )
 
-    private val audioManager: AudioManager =
+    private val audioManager: AudioManager? =
         context.applicationContext.getSystemService(AudioManager::class.java)
 
     fun currentRoute(): Route {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) {
             return Route(false, null, null)
         }
+        val manager = audioManager ?: return Route(false, null, null)
         val inputs = runCatching {
-            audioManager.getDevices(AudioManager.GET_DEVICES_INPUTS).toList()
+            manager.getDevices(AudioManager.GET_DEVICES_INPUTS).toList()
         }.getOrDefault(emptyList())
         val outputs = runCatching {
-            audioManager.getDevices(AudioManager.GET_DEVICES_OUTPUTS).toList()
+            manager.getDevices(AudioManager.GET_DEVICES_OUTPUTS).toList()
         }.getOrDefault(emptyList())
 
         val headsetOutput = outputs.any { it.isHeadsetLike() }

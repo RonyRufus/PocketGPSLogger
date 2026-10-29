@@ -79,12 +79,16 @@ class HandsFreeService : android.app.Service() {
          * crash the process on Android 14.
          */
         fun start(context: Context) {
+            val appContext = context.applicationContext
             val granted = ContextCompat.checkSelfPermission(
-                context, android.Manifest.permission.RECORD_AUDIO,
+                appContext, android.Manifest.permission.RECORD_AUDIO,
             ) == PackageManager.PERMISSION_GRANTED
             if (!granted) return
-            val intent = Intent(context, HandsFreeService::class.java).setAction(ACTION_START)
-            runCatching { ContextCompat.startForegroundService(context, intent) }
+
+            val intent = Intent(appContext, HandsFreeService::class.java).setAction(ACTION_START)
+            // Never let a platform start restriction or OEM exception crash the caller UI.
+            // The service reports runtime initialization errors through its persistent state.
+            runCatching { ContextCompat.startForegroundService(appContext, intent) }
         }
 
         /**
@@ -140,20 +144,27 @@ class HandsFreeService : android.app.Service() {
 
     override fun onCreate() {
         super.onCreate()
-        settingsRepository = ServiceLocator.settingsRepository
-        confirmation = ConfirmationPlayer(this).also { it.initialize() }
-        locationAcquirer = LocationAcquirer(this)
-        routeMonitor = AudioRouteMonitor(this)
-        engine = ListenerEngine(
-            repository = ServiceLocator.locationRepository,
-            locationAcquirer = locationAcquirer,
-            confirmation = confirmation,
-            scope = scope,
-        )
-        engine.startObservingDatabase()
-        EngineProvider.set(engine)
-        createNotificationChannel()
-        registerHeadsetReceiver()
+        try {
+            settingsRepository = ServiceLocator.settingsRepository
+            confirmation = ConfirmationPlayer(this).also { it.initialize() }
+            locationAcquirer = LocationAcquirer(this)
+            routeMonitor = AudioRouteMonitor(this)
+            engine = ListenerEngine(
+                repository = ServiceLocator.locationRepository,
+                locationAcquirer = locationAcquirer,
+                confirmation = confirmation,
+                scope = scope,
+            )
+            engine.startObservingDatabase()
+            EngineProvider.set(engine)
+            createNotificationChannel()
+            registerHeadsetReceiver()
+        } catch (t: Throwable) {
+            // Avoid leaking native/audio resources if service setup fails part-way through.
+            runCatching { if (::confirmation.isInitialized) confirmation.shutdown() }
+            runCatching { scope.cancel() }
+            throw t
+        }
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -170,15 +181,26 @@ class HandsFreeService : android.app.Service() {
             // Cannot host a microphone FGS without the permission. Report the problem, then
             // stop; the UI drives the permission flow. startForeground is attempted so the
             // startForegroundService contract is not violated if this path is ever reached.
-            startForegroundCompat(includeMicrophoneType = false)
-            engine.onError("Microphone permission not granted")
-            updateNotification()
-            stopSelf()
+            runCatching { startForegroundCompat(includeMicrophoneType = false) }
+            runCatching { engine.onError("Microphone permission not granted") }
+            runCatching { updateNotification() }
+            stopSelf(startId)
             return START_NOT_STICKY
         }
 
-        startForegroundCompat(includeMicrophoneType = true)
-        startListening()
+        try {
+            // Must be promoted immediately after startForegroundService(), before loading Vosk
+            // or opening the microphone. On Android 14 this can throw when the OS disallows
+            // microphone FGS startup; handle that without leaving an orphaned service.
+            startForegroundCompat(includeMicrophoneType = true)
+            startListening()
+        } catch (t: Throwable) {
+            runCatching { engine.onError("Could not start hands-free mode: ${t.message ?: t.javaClass.simpleName}") }
+            runCatching { releaseAudio() }
+            runCatching { releaseWakeLock() }
+            runCatching { ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE) }
+            stopSelf(startId)
+        }
         return START_NOT_STICKY
     }
 

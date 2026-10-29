@@ -33,7 +33,6 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.LifecycleResumeEffect
@@ -85,14 +84,13 @@ fun MainScreen(
     val context = androidx.compose.ui.platform.LocalContext.current
     val canStart = modelReady && hasMic && hasLocation && gpsReady
 
+    // Notification permission is optional for starting a foreground service on Android 13+.
+    // Keep it out of the blocking start-permission flow.
     val missingPermissions = buildList {
         if (!hasMic) add(Manifest.permission.RECORD_AUDIO)
         if (!hasLocation) {
             add(Manifest.permission.ACCESS_FINE_LOCATION)
             add(Manifest.permission.ACCESS_COARSE_LOCATION)
-        }
-        if (!hasNotification && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            add(Manifest.permission.POST_NOTIFICATIONS)
         }
     }
 
@@ -277,7 +275,7 @@ fun MainScreen(
         if (!hasNotification && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             TextButton(
                 onClick = { permissionLauncher.launch(arrayOf(Manifest.permission.POST_NOTIFICATIONS)) },
-            ) { Text("Allow notifications for the listening indicator") }
+            ) { Text("Allow notifications for the listening indicator (optional)") }
         }
     }
 }
