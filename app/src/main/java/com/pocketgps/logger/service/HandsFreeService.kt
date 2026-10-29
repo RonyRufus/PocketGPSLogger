@@ -520,7 +520,13 @@ class HandsFreeService : android.app.Service() {
 
     private fun startForegroundCompat(includeMicrophoneType: Boolean) {
         val type = if (includeMicrophoneType && Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+            var types = ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+            // The location type allows location access to continue while screen-off after a
+            // user-initiated start from the visible activity. Avoid requesting it without grant.
+            if (hasLocationPermission()) {
+                types = types or ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION
+            }
+            types
         } else {
             0
         }
@@ -528,6 +534,14 @@ class HandsFreeService : android.app.Service() {
             this, NOTIFICATION_ID, buildNotification(engine.uiState.value), type,
         )
     }
+
+    private fun hasLocationPermission(): Boolean =
+        ContextCompat.checkSelfPermission(
+            this, android.Manifest.permission.ACCESS_FINE_LOCATION,
+        ) == PackageManager.PERMISSION_GRANTED ||
+            ContextCompat.checkSelfPermission(
+                this, android.Manifest.permission.ACCESS_COARSE_LOCATION,
+            ) == PackageManager.PERMISSION_GRANTED
 
     private fun updateNotification() {
         runCatching {
