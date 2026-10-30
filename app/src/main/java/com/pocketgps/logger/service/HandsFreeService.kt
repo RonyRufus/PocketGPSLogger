@@ -239,20 +239,6 @@ class HandsFreeService : android.app.Service() {
 
         acquireWakeLock()
 
-        // Motion gesture capture shares the service lifetime and capture pipeline with voice.
-        // The detector itself is sensor-only; it performs no GPS or database work on the callback.
-        pocketTapDetector?.stop()
-        pocketTapDetector = PocketTapDetector(this) {
-            val capturedAt = System.currentTimeMillis()
-            Log.d(TAG, "Pocket double-tap detected; handing off to capture engine")
-            engine.onTriggerDetected(capturedAt, "pocket double tap", null, null)
-            updateNotification()
-        }.also { detector ->
-            if (!detector.start()) {
-                Log.w(TAG, "No supported motion sensor; pocket tap trigger unavailable")
-            }
-        }
-
         settingsJob?.cancel()
         settingsJob = scope.launch {
             settingsRepository.settings.collect { settings ->
@@ -434,9 +420,34 @@ class HandsFreeService : android.app.Service() {
         mic = null
     }
 
+    private fun updatePocketTapDetector(enabled: Boolean) {
+        if (!enabled) {
+            pocketTapDetector?.stop()
+            pocketTapDetector = null
+            return
+        }
+        if (pocketTapDetector != null) return
+        val detector = PocketTapDetector(this) {
+            val capturedAt = System.currentTimeMillis()
+            Log.d(TAG, "Pocket double-tap detected; handing off to capture engine")
+            engine.onTriggerDetected(capturedAt, "pocket double tap", null, null)
+            updateNotification()
+        }
+        if (!detector.start()) {
+            Log.w(TAG, "No supported motion sensor; pocket tap trigger unavailable")
+            detector.stop()
+            return
+        }
+        if (!detector.hasWakeUpSensor) {
+            Log.w(TAG, "Only a non-wakeup motion sensor is available; screen-off tap delivery is not guaranteed")
+        }
+        pocketTapDetector = detector
+    }
+
     private fun onSettingsChanged(settings: AppSettings) {
         currentSettings = settings
         engine.updateSettings(settings)
+        updatePocketTapDetector(settings.pocketTapEnabled && listeningActive)
         // Pre-warm follows its toggle live; the subscription is idempotent.
         if (settings.gpsPreWarm && listeningActive) {
             locationAcquirer.startPreWarm()
