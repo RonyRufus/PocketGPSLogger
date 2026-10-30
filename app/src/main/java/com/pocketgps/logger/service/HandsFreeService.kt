@@ -540,10 +540,19 @@ class HandsFreeService : android.app.Service() {
     }
 
     private fun startForegroundCompat(includeMicrophoneType: Boolean) {
-        val type = if (includeMicrophoneType && Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
-        } else {
-            0
+        var type = 0
+        if (includeMicrophoneType && Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            type = ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+            // Android 10+ withholds location from background apps unless the foreground service
+            // declares the location type — the cause of "location unavailable" once the screen
+            // is off or the app is left. Android 14 throws if the type is declared without the
+            // runtime permission, so add it only when granted.
+            val locationGranted =
+                checkSelfPermission(android.Manifest.permission.ACCESS_FINE_LOCATION) ==
+                    android.content.pm.PackageManager.PERMISSION_GRANTED ||
+                    checkSelfPermission(android.Manifest.permission.ACCESS_COARSE_LOCATION) ==
+                    android.content.pm.PackageManager.PERMISSION_GRANTED
+            if (locationGranted) type = type or ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION
         }
         ServiceCompat.startForeground(
             this, NOTIFICATION_ID, buildNotification(engine.uiState.value), type,
