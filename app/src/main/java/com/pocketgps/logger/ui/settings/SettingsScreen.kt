@@ -77,9 +77,18 @@ fun SettingsScreen(
         )
 
         TriggerPhraseSection(
-            current = settings.triggerPhrase,
+            current = settings.triggerPhrases.joinToString("\n"),
             onSave = viewModel::setTriggerPhrase,
         )
+
+        SectionCard(title = "Voice observations") {
+            SwitchRow(
+                title = "Capture spoken notes",
+                subtitle = "Say a trigger followed by a short observation. Turn off for the lowest CPU use and location-only saves.",
+                checked = settings.voiceNotes,
+                onCheckedChange = viewModel::setVoiceNotes,
+            )
+        }
 
         SectionCard(title = "Confirmation") {
             Text(
@@ -247,11 +256,14 @@ fun SettingsScreen(
 @Composable
 private fun TriggerPhraseSection(current: String, onSave: (String) -> Unit) {
     var text by remember(current) { mutableStateOf(current) }
-    val valid = TriggerMatcher.isValidTrigger(text)
+    val phrases = text.split('\n', ',', ';').map { it.trim() }.filter { it.isNotEmpty() }
+    val valid = phrases.isNotEmpty() &&
+        phrases.all { TriggerMatcher.isValidTrigger(it) } &&
+        phrases.map { it.lowercase() }.distinct().size == phrases.size
 
-    SectionCard(title = "Trigger phrase") {
+    SectionCard(title = "Trigger phrases") {
         Text(
-            "Two or more English words. The whole phrase must be spoken; a single word never fires.",
+            "Enter one phrase per line. Each must contain at least two words; matching uses whole words, not regex syntax.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
@@ -259,13 +271,15 @@ private fun TriggerPhraseSection(current: String, onSave: (String) -> Unit) {
         OutlinedTextField(
             value = text,
             onValueChange = { text = it },
-            singleLine = true,
+            singleLine = false,
+            minLines = 2,
+            maxLines = 4,
             isError = !valid,
             modifier = Modifier.fillMaxWidth(),
-            label = { Text("Trigger phrase") },
+            label = { Text("Trigger phrases") },
             supportingText = {
                 if (!valid) {
-                    Text("Enter at least two words")
+                    Text("Each phrase needs at least two words; remove duplicates")
                 }
             },
         )
@@ -273,7 +287,7 @@ private fun TriggerPhraseSection(current: String, onSave: (String) -> Unit) {
         Button(
             onClick = { onSave(text) },
             enabled = valid && text.trim().lowercase() != current,
-        ) { Text("Save phrase") }
+        ) { Text("Save phrases") }
     }
 }
 
