@@ -24,6 +24,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
+import java.util.concurrent.TimeUnit
 import kotlin.coroutines.resume
 
 /**
@@ -319,10 +320,10 @@ class LocationAcquirer(private val context: Context) {
         val candidates = mutableListOf<Location>()
         lastWarmFix?.let { candidates += it }
         fused?.lastLocation?.let { task ->
-            // Blocking here is acceptable: we are already on Dispatchers.IO and the task is
-            // normally already complete (cached). Guard with a bounded await via runCatching.
-            runCatching { com.google.android.gms.tasks.Tasks.await(task) }.getOrNull()
-                ?.let { candidates += it }
+            // This is only a cache lookup, never let it block GPS acquisition indefinitely.
+            runCatching {
+                com.google.android.gms.tasks.Tasks.await(task, 500, TimeUnit.MILLISECONDS)
+            }.getOrNull()?.let { candidates += it }
         }
         val lm = locationManager ?: return candidates.maxByOrNull { it.time }
         listOf(
