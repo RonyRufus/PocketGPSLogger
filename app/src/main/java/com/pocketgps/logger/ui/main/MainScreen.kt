@@ -280,7 +280,7 @@ fun MainScreen(
             }
         }
 
-        SectionCard(title = "Last saved location") {
+        SectionCard(title = "Last saved record") {
             val record = latest
             if (record == null) {
                 Text(
