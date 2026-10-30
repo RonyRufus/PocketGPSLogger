@@ -209,7 +209,7 @@ class LocationAcquirer(private val context: Context) {
         if (cached != null) {
             val age = ageSeconds(cached, System.currentTimeMillis())
             val accuracy = cached.accuracy.takeIf { hasAccuracy(it) }
-            val recentEnough = age <= settings.cachedMaxAgeSeconds
+            val recentEnough = cached.time > 0L && age <= settings.cachedMaxAgeSeconds
             val accurateEnough = accuracy == null || accuracy <= settings.maxAccuracyMeters
             if (recentEnough && accurateEnough) {
                 return@withContext Result.Success(toFix(cached, LocationSource.FALLBACK, age))
