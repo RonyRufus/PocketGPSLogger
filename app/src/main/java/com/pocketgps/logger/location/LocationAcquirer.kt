@@ -315,7 +315,7 @@ class LocationAcquirer(private val context: Context) {
 
     // ------------------------------------------------------------------ helpers
 
-    private fun toCandidate(location: Location): LocationPolicy.FixCandidate =
+    private fun Location.toCandidate(): LocationPolicy.FixCandidate =
         LocationPolicy.FixCandidate(
             latitude = location.latitude,
             longitude = location.longitude,
