@@ -4,7 +4,7 @@ on:
   pull_request:
     branches: [main, feat/v1.1-efficiency-and-export]
   push:
-    branches: [main, feat/v1.1-efficiency-and-export, "fix/**"]
+    branches: [main, feat/v1.1-efficiency-and-export, "fix/**", "rewrite/**"]
   workflow_dispatch:
 
 permissions:
