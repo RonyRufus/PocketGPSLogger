@@ -35,7 +35,9 @@ data class AppSettings(
      */
     val triggerPhrases: List<String> = listOf(DEFAULT_TRIGGER_PHRASE),
     /** Display helper: the first configured trigger. */
-    val primaryTrigger: String get() = triggerPhrases.firstOrNull() ?: DEFAULT_TRIGGER_PHRASE,
+    val primaryTrigger: String get() = triggerPhrases.firstOrNull() ?: DEFAULT_TRIGGER_PHRASE
+    /** Backwards-compatible display alias for older UI/state consumers. */
+    val triggerPhrase: String get() = primaryTrigger
     val confirmationMode: ConfirmationMode = ConfirmationMode.SPEECH,
     val gpsTimeoutSeconds: Int = 15,
     val cachedLocationPolicy: CachedLocationPolicy = CachedLocationPolicy.PREFER_RECENT,
