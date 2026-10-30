@@ -80,7 +80,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             try {
                 val settings = settingsRepository.settings.firstOrNull() ?: AppSettings()
                 val triggerAt = System.currentTimeMillis()
-                when (val result = locationAcquirer.acquire(triggerAt, settings)) {
+                when (val result = locationAcquirer.acquire(settings)) {
                     is LocationAcquirer.Result.Success -> {
                         val record = LocationRecord(
                             latitude = result.fix.latitude,
@@ -124,7 +124,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private fun manualSaveWarning(fix: LocationAcquirer.Fix, settings: AppSettings): String? {
         val parts = mutableListOf<String>()
         if (fix.source == com.pocketgps.logger.location.LocationSource.FALLBACK) {
-            parts += "Stale fix used after GPS timeout (age ${fix.ageSeconds ?: 0}s)"
+            parts += "Fallback fix used after GPS timeout (age ${fix.ageSeconds ?: 0}s)"
         }
         val accuracy = fix.accuracyMeters
         if (accuracy != null && accuracy > settings.maxAccuracyMeters) {
