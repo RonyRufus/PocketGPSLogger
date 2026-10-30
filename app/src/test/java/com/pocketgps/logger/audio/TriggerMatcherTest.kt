@@ -32,6 +32,13 @@ class TriggerMatcherTest {
     }
 
     @Test
+    fun regexMatcherRequiresWholeWordBoundaries() {
+        assertFalse(TriggerMatcher.matches("save spots", "save spot"))
+        assertFalse(TriggerMatcher.matches("unsave spot", "save spot"))
+        assertTrue(TriggerMatcher.matches("please, save... spot!", "save spot"))
+    }
+
+    @Test
     fun unrelatedSentenceDoesNotMatch() {
         assertFalse(TriggerMatcher.matches("start the timer", "save spot"))
         assertFalse(TriggerMatcher.matches("save the file", "save spot"))

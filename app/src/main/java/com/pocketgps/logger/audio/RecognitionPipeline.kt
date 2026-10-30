@@ -135,10 +135,13 @@ class RecognitionPipeline(
         if (recentWords.isEmpty()) return
 
         val words = recentWords.map { it.event.word }
-        if (!TriggerMatcher.matchesTokens(words, triggerTokens)) return
+        val matchStart = TriggerMatcher.matchStartIndex(words, triggerTokens)
+        if (matchStart < 0) return
 
-        // Match found. Compute confidence only over the tail words that form the phrase.
-        val confidence = meanConfidenceOfTail(triggerTokens.size)
+        // Score the exact words that matched. The trigger may occur before trailing words in
+        // the same final Vosk segment, so scoring only the last N words can reject a valid match
+        // or accept one based on unrelated words.
+        val confidence = meanConfidenceAt(matchStart, triggerTokens.size)
         if (confidence < minConfidence) return
 
         val nowNs = clock()
@@ -167,12 +170,13 @@ class RecognitionPipeline(
         recentWords.clear()
     }
 
-    private fun meanConfidenceOfTail(count: Int): Float {
-        if (recentWords.isEmpty()) return 0f
-        val start = maxOf(0, recentWords.size - count)
-        val slice = recentWords.drop(start)
-        if (slice.isEmpty()) return 0f
-        return slice.sumOf { it.event.confidence.toDouble() }.toFloat() / slice.size
+    private fun meanConfidenceAt(start: Int, count: Int): Float {
+        if (count <= 0 || start < 0 || start + count > recentWords.size) return 0f
+        var sum = 0.0
+        for (index in start until start + count) {
+            sum += recentWords.elementAt(index).event.confidence.toDouble()
+        }
+        return (sum / count).toFloat()
     }
 
     /** A recognised word plus the wall-clock time it was captured. */
