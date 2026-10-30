@@ -144,7 +144,6 @@ class LocationAcquirer(private val context: Context) {
      */
     @SuppressLint("MissingPermission")
     suspend fun acquire(
-        triggerTimestampMs: Long,
         settings: AppSettings,
     ): Result = withContext(Dispatchers.IO) {
         if (!hasPermission()) {
@@ -197,7 +196,7 @@ class LocationAcquirer(private val context: Context) {
             }
             if (accuracy == null || accuracy <= ABSURD_ACCURACY_METERS) {
                 return@withContext Result.Success(
-                    toFix(fresh, LocationSource.FRESH, ageSeconds(fresh, triggerTimestampMs)),
+                    toFix(fresh, LocationSource.FRESH, ageSeconds(fresh, System.currentTimeMillis())),
                 )
             }
             return@withContext Result.Unavailable(
