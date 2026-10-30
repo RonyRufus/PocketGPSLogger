@@ -15,6 +15,7 @@ import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
 import android.os.SystemClock
+import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
@@ -69,6 +70,7 @@ class HandsFreeService : android.app.Service() {
         const val ACTION_SAVE_NOW = "com.pocketgps.logger.action.SAVE_NOW"
 
         private const val NOTIFICATION_ID = 1001
+        const val TAG = "HandsFreeService"
         private const val WAKELOCK_TAG = "PocketGPSLogger::Listening"
         private const val WAKELOCK_TIMEOUT_MS = 60L * 60_000L
         private const val WAKELOCK_RENEW_THRESHOLD_MS = 55L * 60_000L
@@ -126,7 +128,7 @@ class HandsFreeService : android.app.Service() {
     @Volatile private var currentSettings = AppSettings()
     @Volatile private var listeningActive = false
 
-    private val audioManager: AudioManager by lazy { getSystemService(AudioManager::class.java) }
+    private val audioManager: AudioManager? by lazy { getSystemService(AudioManager::class.java) }
     private val powerManager: PowerManager by lazy { getSystemService(PowerManager::class.java) }
     private val notificationManager: NotificationManager by lazy {
         getSystemService(NotificationManager::class.java)
@@ -136,27 +138,35 @@ class HandsFreeService : android.app.Service() {
     private var lastHeadsetConnected: Boolean? = null
 
     /** Trigger phrase currently compiled into the recognizer grammar. */
-    @Volatile private var appliedTriggerPhrase: String? = null
+    @Volatile private var appliedTriggerPhrases: List<String>? = null
+    @Volatile private var previousVoiceNotes: Boolean? = null
 
     // ------------------------------------------------------------------ lifecycle
 
     override fun onCreate() {
         super.onCreate()
-        settingsRepository = ServiceLocator.settingsRepository
-        confirmation = ConfirmationPlayer(this).also { it.initialize() }
-        locationAcquirer = LocationAcquirer(this)
-        routeMonitor = AudioRouteMonitor(this)
-        engine = ListenerEngine(
-            repository = ServiceLocator.locationRepository,
-            locationAcquirer = locationAcquirer,
-            confirmation = confirmation,
-            scope = scope,
-            haptics = HapticCue(this),
-        )
-        engine.startObservingDatabase()
-        EngineProvider.set(engine)
-        createNotificationChannel()
-        registerHeadsetReceiver()
+        try {
+            settingsRepository = ServiceLocator.settingsRepository
+            confirmation = ConfirmationPlayer(this).also { it.initialize() }
+            locationAcquirer = LocationAcquirer(this)
+            routeMonitor = AudioRouteMonitor(this)
+            engine = ListenerEngine(
+                repository = ServiceLocator.locationRepository,
+                locationAcquirer = locationAcquirer,
+                confirmation = confirmation,
+                scope = scope,
+                haptics = HapticCue(this),
+            )
+            engine.startObservingDatabase()
+            EngineProvider.set(engine)
+            createNotificationChannel()
+            registerHeadsetReceiver()
+        } catch (t: Throwable) {
+            Log.e(TAG, "onCreate failed", t)
+            runCatching { if (::confirmation.isInitialized) confirmation.shutdown() }
+            runCatching { scope.cancel() }
+            throw t
+        }
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -172,7 +182,7 @@ class HandsFreeService : android.app.Service() {
         if (intent?.action == ACTION_SAVE_NOW) {
             // Manual save from the notification. The service is already foreground here;
             // if the engine is not listening yet, saveNow() is a no-op.
-            engine.saveNow()
+            if (::engine.isInitialized) engine.saveNow()
             updateNotification()
             return START_NOT_STICKY
         }
@@ -182,7 +192,7 @@ class HandsFreeService : android.app.Service() {
             // stop; the UI drives the permission flow. startForeground is attempted so the
             // startForegroundService contract is not violated if this path is ever reached.
             startForegroundCompat(includeMicrophoneType = false)
-            engine.onError("Microphone permission not granted")
+            if (::engine.isInitialized) engine.onError("Microphone permission not granted")
             updateNotification()
             stopSelf()
             return START_NOT_STICKY
@@ -203,8 +213,10 @@ class HandsFreeService : android.app.Service() {
         releaseWakeLock()
         confirmation.shutdown()
         unregisterHeadsetReceiver()
-        EngineProvider.clear(engine)
-        engine.shutdown()
+        if (::engine.isInitialized) {
+            EngineProvider.clear(engine)
+            engine.shutdown()
+        }
         scope.cancel()
         super.onDestroy()
     }
@@ -285,6 +297,7 @@ class HandsFreeService : android.app.Service() {
 
                 val model = ServiceLocator.modelManager.loadModel()
                 if (model == null) {
+                    Log.e(TAG, "Vosk model not loaded; cannot start recognition")
                     failListening("Offline speech model is not installed. Open Setup to install it.")
                     return
                 }
@@ -294,26 +307,36 @@ class HandsFreeService : android.app.Service() {
                     it.start()
                 }
                 this.mic = mic
+                Log.d(TAG, "MicAudioSource initialized and recording started")
 
                 val spotter = VoskKeywordSpotter(
                     model = model,
                     sampleRate = MicAudioSource.SAMPLE_RATE,
-                    initialPhrases = listOf(currentSettings.triggerPhrase),
+                    initialPhrases = currentSettings.triggerPhrases,
                 )
                 this.spotter = spotter
+                Log.d(TAG, "Vosk recognizer created for triggers: ${currentSettings.triggerPhrases}")
 
                 val pl = RecognitionPipeline(
                     audio = mic,
                     spotter = spotter,
-                    initialTriggerPhrase = currentSettings.triggerPhrase,
+                    initialTriggers = currentSettings.triggerPhrases,
                     clock = { SystemClock.elapsedRealtimeNanos() },
                     cooldownSeconds = currentSettings.cooldownSeconds,
                 ).also { pipeline ->
+                    pipeline.updateDictation(currentSettings.voiceNotes)
+                    spotter.setDictation(currentSettings.voiceNotes)
                     pipeline.isSuppressed = { confirmation.isPlaying() }
-                    pipeline.onTrigger = { _, _, _ ->
-                        // Hand off immediately; GPS work runs in the engine's own coroutine so the
-                        // audio loop is never blocked.
-                        engine.onTriggerDetected(System.currentTimeMillis())
+                    pipeline.onTrigger = { triggerNanos, phrase, _, observation, transcript ->
+                        // Convert the monotonic trigger time to wall time, so GPS latency and
+                        // dictated-note duration do not shift the saved timestamp.
+                        val elapsedMs = ((SystemClock.elapsedRealtimeNanos() - triggerNanos)
+                            .coerceAtLeast(0L)) / 1_000_000L
+                        val triggerTimestampMs = System.currentTimeMillis() - elapsedMs
+                        Log.d(TAG, "Trigger recognized; handing off to engine")
+                        engine.onTriggerDetected(
+                            triggerTimestampMs, phrase, observation, transcript,
+                        )
                         updateNotification()
                     }
                     pipeline.onMuteDetected = { engine.onAudioInterrupted("microphone muted") }
@@ -321,7 +344,7 @@ class HandsFreeService : android.app.Service() {
                     pipeline.onSourceError = { msg -> engine.onAudioInterrupted("audio read error: $msg") }
                 }
                 this.pipeline = pl
-                appliedTriggerPhrase = currentSettings.triggerPhrase
+                appliedTriggerPhrases = currentSettings.triggerPhrases
 
                 engine.updateReadiness(
                     gpsReady = locationAcquirer.hasPermission() && locationAcquirer.isAnyProviderEnabled(),
@@ -330,9 +353,9 @@ class HandsFreeService : android.app.Service() {
                 engine.markListening()
                 updateNotification()
 
-                var wasInCall = audioManager.mode != AudioManager.MODE_NORMAL
+                var wasInCall = (audioManager?.mode ?: AudioManager.MODE_NORMAL) != AudioManager.MODE_NORMAL
                 while (kotlin.coroutines.coroutineContext.isActive && listeningActive) {
-                    val inCall = audioManager.mode != AudioManager.MODE_NORMAL
+                    val inCall = (audioManager?.mode ?: AudioManager.MODE_NORMAL) != AudioManager.MODE_NORMAL
                     if (inCall != wasInCall) {
                         wasInCall = inCall
                         if (inCall) {
@@ -357,6 +380,7 @@ class HandsFreeService : android.app.Service() {
                 delay(500)
             } catch (t: Throwable) {
                 if (!kotlin.coroutines.coroutineContext.isActive || !listeningActive) return
+                Log.e(TAG, "Audio pipeline crashed", t)
                 engine.onAudioInterrupted("audio restart: ${t.message ?: t.javaClass.simpleName}")
                 releaseAudio()
                 delay(1_000)
@@ -376,6 +400,7 @@ class HandsFreeService : android.app.Service() {
      * service (and its notification) alive so the user can see what went wrong and tap Stop.
      */
     private fun failListening(message: String) {
+        Log.e(TAG, "failListening: $message")
         engine.onError(message)
         releaseAudio()
         releaseWakeLock()
@@ -404,11 +429,16 @@ class HandsFreeService : android.app.Service() {
         }
         // Rebuild the grammar only when the phrase actually changed: rebuilding tears down and
         // recreates the native recognizer, which is expensive and loses in-flight audio.
-        if (settings.triggerPhrase != appliedTriggerPhrase) {
-            appliedTriggerPhrase = settings.triggerPhrase
-            pipeline?.updateTrigger(settings.triggerPhrase)
-            runCatching { spotter?.updateGrammar(listOf(settings.triggerPhrase)) }
+        if (settings.triggerPhrases != appliedTriggerPhrases) {
+            appliedTriggerPhrases = settings.triggerPhrases
+            pipeline?.updateTriggers(settings.triggerPhrases)
+            runCatching { spotter?.updateGrammar(settings.triggerPhrases) }
         }
+        if (settings.voiceNotes != previousVoiceNotes) {
+            pipeline?.updateDictation(settings.voiceNotes)
+            runCatching { spotter?.setDictation(settings.voiceNotes) }
+        }
+        previousVoiceNotes = settings.voiceNotes
         pipeline?.cooldownSeconds = settings.cooldownSeconds
     }
 

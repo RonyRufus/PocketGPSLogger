@@ -9,6 +9,7 @@ import androidx.datastore.preferences.core.floatPreferencesKey
 import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
+import com.pocketgps.logger.audio.TriggerMatcher
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 
@@ -17,11 +18,18 @@ private val Context.dataStore: DataStore<Preferences> by preferencesDataStore(na
 /**
  * Persists [AppSettings] via Preferences DataStore. Exposes a single cold [settings] Flow that
  * the service and UI both observe.
+ *
+ * Also persists the observation draft (the text currently typed on the capture card) so an
+ * interrupted note survives app restarts, keyed separately from settings semantics.
  */
 class SettingsRepository(private val context: Context) {
 
     private object Keys {
-        val TRIGGER = stringPreferencesKey("trigger_phrase")
+        /** Legacy single-phrase key (v1 settings). Read for migration; no longer written. */
+        val TRIGGER_LEGACY = stringPreferencesKey("trigger_phrase")
+
+        /** Newline-joined trigger phrases. */
+        val TRIGGERS = stringPreferencesKey("trigger_phrases")
         val CONFIRM = stringPreferencesKey("confirmation_mode")
         val GPS_TIMEOUT = intPreferencesKey("gps_timeout_seconds")
         val CACHE_POLICY = stringPreferencesKey("cached_policy")
@@ -30,12 +38,14 @@ class SettingsRepository(private val context: Context) {
         val COOLDOWN = intPreferencesKey("cooldown_seconds")
         val GPS_PRE_WARM = booleanPreferencesKey("gps_pre_warm")
         val HAPTIC_FEEDBACK = booleanPreferencesKey("haptic_feedback")
+        val VOICE_NOTES = booleanPreferencesKey("voice_notes")
+        val DRAFT_OBSERVATION = stringPreferencesKey("draft_observation")
     }
 
     val settings: Flow<AppSettings> = context.dataStore.data.map { prefs ->
         val defaults = AppSettings()
         AppSettings(
-            triggerPhrase = prefs[Keys.TRIGGER]?.takeIf { it.isNotBlank() } ?: defaults.triggerPhrase,
+            triggerPhrases = readTriggers(prefs, defaults),
             confirmationMode = prefs[Keys.CONFIRM]
                 ?.let { runCatching { ConfirmationMode.valueOf(it) }.getOrNull() }
                 ?: defaults.confirmationMode,
@@ -52,11 +62,41 @@ class SettingsRepository(private val context: Context) {
                 ?: defaults.cooldownSeconds,
             gpsPreWarm = prefs[Keys.GPS_PRE_WARM] ?: defaults.gpsPreWarm,
             hapticFeedback = prefs[Keys.HAPTIC_FEEDBACK] ?: defaults.hapticFeedback,
+            voiceNotes = prefs[Keys.VOICE_NOTES] ?: defaults.voiceNotes,
         )
     }
 
-    suspend fun setTriggerPhrase(phrase: String) = context.dataStore.edit {
-        it[Keys.TRIGGER] = phrase.trim().lowercase()
+    /** The observation draft shown on the capture card; empty string when none. */
+    val draftObservation: Flow<String> = context.dataStore.data.map { prefs ->
+        prefs[Keys.DRAFT_OBSERVATION] ?: ""
+    }
+
+    /**
+     * Migrate the legacy single trigger to the list form, then keep only valid phrases.
+     * Falls back to the default when nothing valid is stored.
+     */
+    private fun readTriggers(prefs: Preferences, defaults: AppSettings): List<String> {
+        val stored = prefs[Keys.TRIGGERS]
+            ?.split('\n')
+            ?.map { it.trim().lowercase() }
+            ?.filter { TriggerMatcher.isValidTrigger(it) }
+            ?.distinct()
+            ?.takeIf { it.isNotEmpty() }
+        if (stored != null) return stored
+        val legacy = prefs[Keys.TRIGGER_LEGACY]?.trim()?.lowercase()
+        if (legacy != null && TriggerMatcher.isValidTrigger(legacy)) return listOf(legacy)
+        return defaults.triggerPhrases
+    }
+
+    /** Backwards-compatible setter; accepts one phrase. */
+    suspend fun setTriggerPhrase(phrase: String) = setTriggerPhrases(listOf(phrase))
+
+    suspend fun setTriggerPhrases(phrases: List<String>) = context.dataStore.edit {
+        val valid = phrases.map { p -> p.trim().lowercase() }
+            .filter { p -> TriggerMatcher.isValidTrigger(p) }
+            .distinct()
+        it[Keys.TRIGGERS] =
+            if (valid.isEmpty()) AppSettings.DEFAULT_TRIGGER_PHRASE else valid.joinToString("\n")
     }
 
     suspend fun setConfirmationMode(mode: ConfirmationMode) = context.dataStore.edit {
@@ -93,5 +133,19 @@ class SettingsRepository(private val context: Context) {
 
     suspend fun setHapticFeedback(value: Boolean) = context.dataStore.edit {
         it[Keys.HAPTIC_FEEDBACK] = value
+    }
+
+    suspend fun setVoiceNotes(value: Boolean) = context.dataStore.edit {
+        it[Keys.VOICE_NOTES] = value
+    }
+
+    suspend fun setDraftObservation(text: String) = context.dataStore.edit {
+        val trimmed = text.trim()
+        if (trimmed.isEmpty()) it.remove(Keys.DRAFT_OBSERVATION)
+        else it[Keys.DRAFT_OBSERVATION] = trimmed
+    }
+
+    suspend fun clearDraftObservation() = context.dataStore.edit {
+        it.remove(Keys.DRAFT_OBSERVATION)
     }
 }

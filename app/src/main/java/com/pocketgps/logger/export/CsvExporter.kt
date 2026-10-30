@@ -29,6 +29,10 @@ object CsvExporter {
         "trigger_phrase",
         "save_status",
         "notes",
+        "observation",
+        "transcript",
+        "category",
+        "modified_timestamp",
     )
 
     fun export(records: List<LocationRecord>): String = buildString {
@@ -38,16 +42,20 @@ object CsvExporter {
 
     private fun row(record: LocationRecord): String = listOf(
         record.id.toString(),
-        GpxExporter.format(record.latitude),
-        GpxExporter.format(record.longitude),
+        record.latitude?.let(GpxExporter::format) ?: "",
+        record.longitude?.let(GpxExporter::format) ?: "",
         record.triggerTimestamp.toString(),
-        record.locationTimestamp.toString(),
+        record.locationTimestamp?.toString() ?: "",
         record.accuracyMeters?.toString() ?: "",
         record.locationSource,
         record.locationAgeSeconds?.toString() ?: "",
         record.triggerPhrase,
         record.saveStatus,
         record.notes ?: "",
+        record.observation ?: "",
+        record.transcript ?: "",
+        record.category ?: "",
+        record.modifiedTimestamp?.toString() ?: "",
     ).joinToString(",") { it.toCsvField() }
 
     /** RFC 4180: quote everything, double embedded quotes, strip forbidden control chars. */

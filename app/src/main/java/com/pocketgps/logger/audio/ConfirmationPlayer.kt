@@ -74,19 +74,22 @@ class ConfirmationPlayer(private val context: Context) {
         if (newMode == ConfirmationMode.SPEECH) initialize()
     }
 
-    /** Short, deliberately quiet acknowledgement. */
+    /** Short, deliberately quiet acknowledgement after a location has been committed. */
     fun playSuccess() = playCue(success = true)
+
+    /** A note was committed, but GPS coordinates were unavailable. */
+    fun playNoteSaved() = playCue(success = true, successText = "Note saved; no GPS fix")
 
     fun playFailure() = playCue(success = false)
 
-    private fun playCue(success: Boolean) {
+    private fun playCue(success: Boolean, successText: String = "Location saved") {
         if (silenced) return
         when (mode) {
             ConfirmationMode.SILENT -> Unit
             ConfirmationMode.TONE -> playTone(success)
             ConfirmationMode.SPEECH -> {
                 initialize()
-                speakInternal(if (success) "Location saved" else "Location unavailable")
+                speakInternal(if (success) successText else "Location unavailable")
             }
         }
     }

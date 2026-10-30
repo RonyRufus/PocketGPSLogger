@@ -16,10 +16,18 @@ class LocationRepository(private val dao: LocationDao) {
 
     fun observeLatest(): Flow<LocationRecord?> = dao.observeLatest()
 
+    fun observeRecent(limit: Int): Flow<List<LocationRecord>> = dao.observeRecent(limit)
+
     fun observeLatestFresh(): Flow<LocationRecord?> = dao.observeLatestFresh()
+
+    fun observeCategories(): Flow<List<String>> = dao.observeCategories()
 
     /** Live record count without materialising rows — cheaper than observing all records. */
     fun observeCount(): Flow<Int> = dao.observeCount()
+
+    /** Live filtered/sorted history; [pattern] is a SQL LIKE pattern, null [category] = any. */
+    fun search(pattern: String, newestFirst: Boolean, category: String?): Flow<List<LocationRecord>> =
+        if (newestFirst) dao.searchNewest(pattern, category) else dao.searchOldest(pattern, category)
 
     /** Number of records saved in [fromMs, toMs). */
     suspend fun countBetween(fromMs: Long, toMs: Long): Int = dao.countBetween(fromMs, toMs)
@@ -27,8 +35,14 @@ class LocationRepository(private val dao: LocationDao) {
     /** One-shot read of every record ordered oldest → newest (for export). */
     suspend fun listAll(): List<LocationRecord> = dao.listAll()
 
+    /** One record by id, or null. */
+    suspend fun byId(id: Long): LocationRecord? = dao.getById(id)
+
     /** Insert and return the generated id. Throws if the write fails. */
     suspend fun insert(record: LocationRecord): Long = dao.insert(record)
+
+    /** Persist an edit (observation text, category, attach-later). Throws if the write fails. */
+    suspend fun update(record: LocationRecord) = dao.update(record)
 
     suspend fun delete(id: Long) = dao.deleteById(id)
 

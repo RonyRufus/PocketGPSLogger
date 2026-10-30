@@ -49,12 +49,12 @@ class PhraseTestRunner(
             val pipeline = RecognitionPipeline(
                 audio = mic,
                 spotter = s,
-                initialTriggerPhrase = triggerPhrase,
+                initialTriggers = listOf(triggerPhrase),
                 clock = { SystemClock.elapsedRealtimeNanos() },
                 cooldownSeconds = 1,
             )
             pipeline.onPartial = { partial -> partial?.let(onPartial) }
-            pipeline.onTrigger = { _, _, _ -> matched = true }
+            pipeline.onTrigger = { _, _, _, _, _ -> matched = true }
 
             val deadline = SystemClock.elapsedRealtime() + durationMs
             while (!matched && SystemClock.elapsedRealtime() < deadline) {

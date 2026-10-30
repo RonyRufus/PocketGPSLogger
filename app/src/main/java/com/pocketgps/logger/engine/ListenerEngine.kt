@@ -68,7 +68,7 @@ class ListenerEngine(
     fun updateSettings(newSettings: AppSettings) {
         settings = newSettings
         confirmation.setMode(newSettings.confirmationMode)
-        _uiState.update { it.copy(triggerPhrase = newSettings.triggerPhrase) }
+        _uiState.update { it.copy(triggerPhrase = newSettings.primaryTrigger) }
     }
 
     fun updateReadiness(gpsReady: Boolean, microphoneReady: Boolean) {
@@ -98,7 +98,7 @@ class ListenerEngine(
         _uiState.update {
             it.copy(
                 state = ListenerState.LISTENING,
-                statusMessage = "Listening for \"${settings.triggerPhrase}\"",
+                statusMessage = "Listening for \"${settings.primaryTrigger}\"",
                 errorMessage = null,
                 lastEventAtMs = System.currentTimeMillis(),
             )
@@ -155,8 +155,19 @@ class ListenerEngine(
      * Called from the audio thread the moment the full trigger phrase is accepted.
      * [triggerTimestampMs] must be the wall-clock time of detection (not of the DB write).
      */
-    fun onTriggerDetected(triggerTimestampMs: Long) {
-        startCapture(triggerTimestampMs, fromUserAction = false)
+    fun onTriggerDetected(
+        triggerTimestampMs: Long,
+        triggerPhrase: String = settings.primaryTrigger,
+        observation: String? = null,
+        transcript: String? = null,
+    ) {
+        startCapture(
+            triggerTimestampMs = triggerTimestampMs,
+            fromUserAction = false,
+            triggerPhrase = triggerPhrase,
+            observation = observation,
+            transcript = transcript,
+        )
     }
 
     /**
@@ -169,12 +180,20 @@ class ListenerEngine(
         startCapture(System.currentTimeMillis(), fromUserAction = true)
     }
 
-    private fun startCapture(triggerTimestampMs: Long, fromUserAction: Boolean) {
+    private fun startCapture(
+        triggerTimestampMs: Long,
+        fromUserAction: Boolean,
+        triggerPhrase: String = settings.primaryTrigger,
+        observation: String? = null,
+        transcript: String? = null,
+    ) {
         if (!active) return
         if (captureInProgress) return // one utterance has already started a capture
         captureInProgress = true
 
-        val phrase = if (fromUserAction) "manual save" else settings.triggerPhrase
+        val phrase = if (fromUserAction) "manual save" else triggerPhrase
+        val cleanObservation = observation?.trim()?.takeIf { it.isNotEmpty() }
+        val cleanTranscript = transcript?.trim()?.takeIf { it.isNotEmpty() }
         _uiState.update {
             it.copy(
                 state = ListenerState.CAPTURING,
@@ -185,12 +204,20 @@ class ListenerEngine(
 
         scope.launch {
             try {
-                val result = locationAcquirer.acquire(triggerTimestampMs, settings)
+                val result = locationAcquirer.acquire(settings)
                 when (result) {
-                    is LocationAcquirer.Result.Success -> persist(triggerTimestampMs, phrase, result.fix)
+                    is LocationAcquirer.Result.Success -> persist(
+                        triggerTimestampMs, phrase, result.fix, cleanObservation, cleanTranscript,
+                    )
                     is LocationAcquirer.Result.Unavailable -> {
-                        failCue()
-                        if (active) {
+                        if (cleanObservation != null) {
+                            persistWithoutLocation(
+                                triggerTimestampMs, phrase, cleanObservation, cleanTranscript, result.reason,
+                            )
+                        } else {
+                            failCue()
+                        }
+                        if (active && cleanObservation == null) {
                             _uiState.update {
                                 it.copy(
                                     state = ListenerState.LISTENING,
@@ -222,6 +249,8 @@ class ListenerEngine(
         triggerTimestampMs: Long,
         triggerPhrase: String,
         fix: LocationAcquirer.Fix,
+        observation: String? = null,
+        transcript: String? = null,
     ) {
         if (!active) return
         _uiState.update { it.copy(state = ListenerState.SAVING) }
@@ -238,6 +267,8 @@ class ListenerEngine(
             triggerPhrase = triggerPhrase,
             saveStatus = "success",
             notes = warning,
+            observation = observation,
+            transcript = transcript,
         )
 
         val committed = withContext(Dispatchers.IO) {
@@ -274,6 +305,59 @@ class ListenerEngine(
         }
     }
 
+    /** Save the observation even when no acceptable GPS fix was available. */
+    private suspend fun persistWithoutLocation(
+        triggerTimestampMs: Long,
+        triggerPhrase: String,
+        observation: String,
+        transcript: String?,
+        reason: String,
+    ) {
+        val record = LocationRecord(
+            latitude = null,
+            longitude = null,
+            triggerTimestamp = triggerTimestampMs,
+            locationTimestamp = null,
+            accuracyMeters = null,
+            locationSource = com.pocketgps.logger.location.LocationSource.NONE.wire,
+            locationAgeSeconds = null,
+            triggerPhrase = triggerPhrase,
+            saveStatus = "success",
+            notes = "GPS unavailable: $reason",
+            observation = observation,
+            transcript = transcript,
+        )
+        val id = withContext(Dispatchers.IO) {
+            runCatching { repository.insert(record) }.getOrNull()
+        }
+        if (id != null) {
+            val saved = record.copy(id = id)
+            if (active) {
+                _uiState.update {
+                    it.copy(
+                        state = ListenerState.LISTENING,
+                        lastSaved = saved,
+                        statusMessage = "Note saved; GPS unavailable",
+                        lastEventAtMs = System.currentTimeMillis(),
+                    )
+                }
+            }
+            if (settings.hapticFeedback) haptics?.success()
+            confirmation.playNoteSaved()
+        } else {
+            failCue()
+            if (active) {
+                _uiState.update {
+                    it.copy(
+                        state = ListenerState.LISTENING,
+                        statusMessage = "Note save failed — record not committed",
+                        lastEventAtMs = System.currentTimeMillis(),
+                    )
+                }
+            }
+        }
+    }
+
     private fun failCue() {
         if (settings.hapticFeedback) haptics?.failure()
         runCatching { confirmation.playFailure() }
@@ -283,7 +367,7 @@ class ListenerEngine(
         val parts = mutableListOf<String>()
         if (fix.source == com.pocketgps.logger.location.LocationSource.FALLBACK) {
             val age = fix.ageSeconds ?: 0
-            parts += "Stale fix used after GPS timeout (age ${age}s)"
+            parts += "Fallback fix used after GPS timeout (age ${age}s)"
         }
         val accuracy = fix.accuracyMeters
         if (accuracy != null && accuracy > settings.maxAccuracyMeters) {

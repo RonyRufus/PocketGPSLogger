@@ -37,12 +37,13 @@ class RecognitionPipelineTest {
         override fun partialResult(): String? = null
         override fun streamSeconds(): Float = call * 0.128f
         override fun updateGrammar(phrases: List<String>) = Unit
+        override fun setDictation(enabled: Boolean) = Unit
         override fun close() = Unit
     }
 
-    private fun word(text: String) = RecognitionEvent(
+    private fun word(text: String, confidence: Float = 0.9f) = RecognitionEvent(
         word = text,
-        confidence = 0.9f,
+        confidence = confidence,
         startStreamSeconds = 0f,
         endStreamSeconds = 0f,
     )
@@ -57,12 +58,39 @@ class RecognitionPipelineTest {
         val pl = RecognitionPipeline(
             audio = FakeAudioSource(chunks),
             spotter = ScriptedSpotter(script),
-            initialTriggerPhrase = "save spot",
+            initialTriggers = listOf("save spot"),
             clock = clock,
             cooldownSeconds = 3,
         )
-        pl.onTrigger = { ns, _, _ -> triggers.add(ns) }
+        pl.onTrigger = { ns, _, _, _, _ -> triggers.add(ns) }
         return pl to triggers
+    }
+
+    @Test
+    fun dictationCapturesWordsAfterTriggerAndPreservesTranscript() {
+        var now = 1_000_000_000L
+        val chunks = listOf(ShortArray(2048) { 3000 })
+        val spotter = ScriptedSpotter(
+            listOf(listOf(word("save"), word("spot"), word("new"), word("apartment"))),
+        )
+        val pl = RecognitionPipeline(
+            audio = FakeAudioSource(chunks),
+            spotter = spotter,
+            initialTriggers = listOf("save spot"),
+            clock = { now },
+        )
+        var capturedNote: String? = null
+        var capturedTranscript: String? = null
+        pl.updateDictation(true)
+        pl.onTrigger = { _, _, _, note, transcript ->
+            capturedNote = note
+            capturedTranscript = transcript
+        }
+        pl.processOneChunk()
+        // End of source flushes the pending note capture.
+        pl.processOneChunk()
+        assertEquals("new apartment", capturedNote)
+        assertEquals("save spot new apartment", capturedTranscript)
     }
 
     @Test
@@ -72,6 +100,18 @@ class RecognitionPipelineTest {
             script = listOf(listOf(word("save"), word("spot"))),
             clock = { now },
         )
+        pl.processOneChunk()
+        assertEquals(1, triggers.size)
+    }
+
+    @Test
+    fun confidenceIsCalculatedFromMatchedWordsNotTrailingWords() {
+        var now = 0L
+        val (pl, triggers) = pipeline(
+            script = listOf(listOf(word("save", 0.9f), word("spot", 0.9f), word("yes", 0.1f))),
+            clock = { now },
+        )
+        pl.minConfidence = 0.8f
         pl.processOneChunk()
         assertEquals(1, triggers.size)
     }
