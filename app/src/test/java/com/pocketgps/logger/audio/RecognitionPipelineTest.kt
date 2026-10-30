@@ -67,6 +67,33 @@ class RecognitionPipelineTest {
     }
 
     @Test
+    fun dictationCapturesWordsAfterTriggerAndPreservesTranscript() {
+        var now = 1_000_000_000L
+        val chunks = listOf(ShortArray(2048) { 3000 })
+        val spotter = ScriptedSpotter(
+            listOf(listOf(word("save"), word("spot"), word("new"), word("apartment"))),
+        )
+        val pl = RecognitionPipeline(
+            audio = FakeAudioSource(chunks),
+            spotter = spotter,
+            initialTriggers = listOf("save spot"),
+            clock = { now },
+        )
+        var capturedNote: String? = null
+        var capturedTranscript: String? = null
+        pl.updateDictation(true)
+        pl.onTrigger = { _, _, _, note, transcript ->
+            capturedNote = note
+            capturedTranscript = transcript
+        }
+        pl.processOneChunk()
+        // End of source flushes the pending note capture.
+        pl.processOneChunk()
+        assertEquals("new apartment", capturedNote)
+        assertEquals("save spot new apartment", capturedTranscript)
+    }
+
+    @Test
     fun matchingPhraseFiresOnce() {
         var now = 0L
         val (pl, triggers) = pipeline(
