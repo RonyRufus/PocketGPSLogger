@@ -11,6 +11,7 @@ import android.os.Looper
 import androidx.core.content.ContextCompat
 import com.google.android.gms.common.ConnectionResult
 import com.google.android.gms.common.GoogleApiAvailability
+import com.google.android.gms.location.CurrentLocationRequest
 import com.google.android.gms.location.FusedLocationProviderClient
 import com.google.android.gms.location.LocationCallback
 import com.google.android.gms.location.LocationRequest
@@ -251,8 +252,14 @@ class LocationAcquirer(private val context: Context) {
     @SuppressLint("MissingPermission")
     private suspend fun requestFusedOnce(client: FusedLocationProviderClient): Location? {
         val cts = CancellationTokenSource()
+        // Explicitly disallow an old cached fix. A trigger should capture the location now, not
+        // silently reuse a coordinate from before the user moved.
+        val request = CurrentLocationRequest.Builder()
+            .setPriority(Priority.PRIORITY_HIGH_ACCURACY)
+            .setMaxUpdateAgeMillis(0L)
+            .build()
         val task = runCatching {
-            client.getCurrentLocation(Priority.PRIORITY_HIGH_ACCURACY, cts.token)
+            client.getCurrentLocation(request, cts.token)
         }.getOrNull() ?: return null
         return try {
             suspendCancellableCoroutine<Location?> { cont ->
