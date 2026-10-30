@@ -5,16 +5,14 @@ import org.vosk.Model
 import org.vosk.Recognizer
 
 /**
- * Persistent Vosk recognizer over the raw 16 kHz PCM stream, supporting two modes:
- *  - **Constrained grammar** (default): only the configured trigger words plus decoys can be
- *    emitted — best trigger accuracy, lowest CPU, but it cannot transcribe a note.
- *  - **Dictation** ([setDictation](true)): an unconstrained recognizer over the same small
- *    model, used for "trigger + note" voice captures. Slightly more CPU per active chunk; the
- *    voice gate keeps the idle cost unchanged.
+ * Vosk backend for [KeywordSpotter].
  *
- * The recognizer is created **once** per listening session and reused for every chunk; it is
- * never torn down between utterances. When the trigger phrases change, [updateGrammar] swaps
- * in a fresh recognizer while carrying the stream clock forward so timing stays continuous.
+ *  - **Trigger recogniser**: persistent, always grammar-constrained (trigger words + decoys),
+ *    created once per session. Voice notes never change it, so trigger accuracy and CPU are the
+ *    same with notes on or off. Rebuilt only when the trigger phrases change.
+ *  - **Note recogniser**: unconstrained, over the same small model, created when voice notes are
+ *    enabled (off the audio thread) and reused via reset() for every capture. It only ever sees
+ *    audio that follows a matched trigger.
  */
 class VoskKeywordSpotter(
     private val model: Model,
@@ -26,39 +24,27 @@ class VoskKeywordSpotter(
         private const val TAG = "VoskKeywordSpotter"
     }
 
-    private var dictation = false
     private var phrases: List<String> = initialPhrases
+    private var recognizer: Recognizer = newTriggerRecognizer()
 
-    private var recognizer: Recognizer = newRecognizer()
+    private var noteRecognizer: Recognizer? = null
+    private val noteWords = ArrayList<RecognitionEvent>()
 
-    private fun newRecognizer(): Recognizer =
-        try {
-            val grammar = if (dictation) null else GrammarJson.build(phrases)
-            val rec = if (grammar == null) {
-                Recognizer(model, sampleRate.toFloat())
-            } else {
-                Recognizer(model, sampleRate.toFloat(), grammar)
-            }
-            rec.apply { setWords(true) }
-        } catch (t: Throwable) {
-            Log.e(TAG, "Failed to create Vosk Recognizer (dictation=$dictation)", t)
-            throw t
-        }
+    private var streamBaseSamples: Long = 0L
+    private var totalSamplesFed: Long = 0L
 
-    /**
-     * Feed [length] samples from [pcm] starting at [offset].
-     * Returns the parsed final-result words (possibly empty).
-     *
-     * Synchronised with [updateGrammar]/[setDictation]/[close]: a grammar rebuild closes the
-     * old native recognizer, so it must never happen while another thread is inside a JNI call.
-     */
+    private fun newTriggerRecognizer(): Recognizer =
+        Recognizer(model, sampleRate.toFloat(), GrammarJson.build(phrases)).apply { setWords(true) }
+
+    private fun newNoteRecognizer(): Recognizer =
+        Recognizer(model, sampleRate.toFloat()).apply { setWords(true) }
+
     @Synchronized
     override fun acceptWaveForm(pcm: ShortArray, offset: Int, length: Int): List<RecognitionEvent> {
         val rec = recognizer
         val isFinal = if (offset == 0) {
             rec.acceptWaveForm(pcm, length)
         } else {
-            // Vosk expects a full array; copy the slice (allocation only on the rare offset path).
             rec.acceptWaveForm(pcm.copyOfRange(offset, offset + length), length)
         }
         totalSamplesFed += length
@@ -77,51 +63,83 @@ class VoskKeywordSpotter(
         VoskResultParser.parsePartial(recognizer.partialResult)
     }.getOrNull()
 
-    /** Total audio seconds consumed since the session began (continuous clock). */
     override fun streamSeconds(): Float = totalSamplesFed.toFloat() / sampleRate
-
-    private var streamBaseSamples: Long = 0L
-    private var totalSamplesFed: Long = 0L
 
     @Synchronized
     override fun updateGrammar(newPhrases: List<String>) {
-        if (!dictation && newPhrases == phrases) return
+        if (newPhrases == phrases) return
         val old = recognizer
         phrases = newPhrases
         streamBaseSamples = totalSamplesFed
-        recognizer = newRecognizer()
+        recognizer = newTriggerRecognizer()
         runCatching { old.close() }.onFailure { Log.w(TAG, "Failed to close old recognizer", it) }
         Log.d(TAG, "Grammar updated to $newPhrases")
     }
 
-    @Synchronized
+    /** Prepare/release only the note recogniser. The trigger recogniser is never touched. */
     override fun setDictation(enabled: Boolean) {
-        if (enabled == dictation) return
-        val old = recognizer
-        dictation = enabled
-        streamBaseSamples = totalSamplesFed
-        recognizer = newRecognizer()
-        runCatching { old.close() }.onFailure { Log.w(TAG, "Failed to close old recognizer", it) }
-        Log.d(TAG, "Dictation mode set to $enabled")
+        if (enabled) {
+            if (synchronized(this) { noteRecognizer != null }) return
+            // Allocate outside the lock so the audio thread is never stalled by model setup.
+            val created = runCatching { newNoteRecognizer() }
+                .onFailure { Log.e(TAG, "Failed to create note recogniser", it) }
+                .getOrNull() ?: return
+            val surplus = synchronized(this) {
+                if (noteRecognizer == null) { noteRecognizer = created; null } else created
+            }
+            surplus?.let { runCatching { it.close() } }
+        } else {
+            val old = synchronized(this) {
+                noteWords.clear()
+                noteRecognizer.also { noteRecognizer = null }
+            }
+            old?.let { runCatching { it.close() } }
+        }
+        Log.d(TAG, "Note transcriber enabled=$enabled")
     }
 
     @Synchronized
-    override fun close() {
-        runCatching { recognizer.close() }.onFailure { Log.w(TAG, "Failed to close recognizer", it) }
-        Log.d(TAG, "Recognizer closed")
+    override fun beginNote(): Boolean {
+        noteWords.clear()
+        val rec = noteRecognizer ?: runCatching { newNoteRecognizer() }
+            .onFailure { Log.e(TAG, "Note recogniser unavailable", it) }
+            .getOrNull()?.also { noteRecognizer = it } ?: return false
+        return runCatching { rec.reset(); true }.getOrDefault(false)
     }
-}
 
-/**
- * Minimal interface so [RecognitionPipeline] can be tested with a scripted fake spotter.
- */
-interface KeywordSpotter {
-    val sampleRate: Int
-    fun acceptWaveForm(pcm: ShortArray, offset: Int, length: Int): List<RecognitionEvent>
-    fun partialResult(): String?
-    fun streamSeconds(): Float
-    fun updateGrammar(phrases: List<String>)
-    /** Switch between the constrained grammar and unconstrained dictation. */
-    fun setDictation(enabled: Boolean)
-    fun close()
+    @Synchronized
+    override fun acceptNoteAudio(pcm: ShortArray, offset: Int, length: Int) {
+        val rec = noteRecognizer ?: return
+        val endpoint = if (offset == 0) {
+            rec.acceptWaveForm(pcm, length)
+        } else {
+            rec.acceptWaveForm(pcm.copyOfRange(offset, offset + length), length)
+        }
+        // Vosk closes a segment at its own endpoint; keep that segment's words or they are lost.
+        if (endpoint) noteWords += VoskResultParser.parseFinal(rec.result)
+    }
+
+    @Synchronized
+    override fun finishNote(): List<RecognitionEvent> {
+        val rec = noteRecognizer ?: return emptyList()
+        noteWords += VoskResultParser.parseFinal(rec.finalResult)
+        val out = ArrayList(noteWords)
+        noteWords.clear()
+        return out
+    }
+
+    @Synchronized
+    override fun cancelNote() {
+        noteWords.clear()
+        runCatching { noteRecognizer?.reset() }
+    }
+
+    override fun close() {
+        val (a, b) = synchronized(this) {
+            Pair(recognizer, noteRecognizer).also { noteRecognizer = null }
+        }
+        runCatching { a.close() }.onFailure { Log.w(TAG, "Failed to close recognizer", it) }
+        b?.let { runCatching { it.close() } }
+        Log.d(TAG, "Recognizers closed")
+    }
 }
