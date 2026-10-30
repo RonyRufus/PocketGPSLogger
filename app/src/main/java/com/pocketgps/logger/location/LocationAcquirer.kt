@@ -173,11 +173,19 @@ class LocationAcquirer(private val context: Context) {
         val fresh = withTimeoutOrNull(timeoutMs) { requestFreshFix() }
 
         if (fresh != null) {
+            val freshAge = ageSeconds(fresh, System.currentTimeMillis())
+            // getCurrentLocation may return a cached provider fix. Do not label it fresh merely
+            // because it came back from the one-shot API; require a valid, recent timestamp.
+            if (fresh.time <= 0L || freshAge > settings.cachedMaxAgeSeconds) {
+                return@withContext Result.Unavailable(
+                    "GPS provider returned a stale fix (${freshAge}s old; limit ${settings.cachedMaxAgeSeconds}s)",
+                )
+            }
             val accuracy = fresh.accuracy.takeIf { hasAccuracy(it) }
             val usable = accuracy == null || accuracy <= settings.maxAccuracyMeters
             if (usable) {
                 return@withContext Result.Success(
-                    toFix(fresh, LocationSource.FRESH, ageSeconds(fresh, System.currentTimeMillis())),
+                    toFix(fresh, LocationSource.FRESH, freshAge),
                 )
             }
             // Fresh but poor accuracy. Prefer a better cached fix if one exists, else return the
