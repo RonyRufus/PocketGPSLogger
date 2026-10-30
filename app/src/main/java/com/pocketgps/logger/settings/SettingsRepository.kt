@@ -39,6 +39,7 @@ class SettingsRepository(private val context: Context) {
         val GPS_PRE_WARM = booleanPreferencesKey("gps_pre_warm")
         val HAPTIC_FEEDBACK = booleanPreferencesKey("haptic_feedback")
         val VOICE_NOTES = booleanPreferencesKey("voice_notes")
+        val POCKET_TAP_ENABLED = booleanPreferencesKey("pocket_tap_enabled")
         val DRAFT_OBSERVATION = stringPreferencesKey("draft_observation")
     }
 
@@ -63,6 +64,7 @@ class SettingsRepository(private val context: Context) {
             gpsPreWarm = prefs[Keys.GPS_PRE_WARM] ?: defaults.gpsPreWarm,
             hapticFeedback = prefs[Keys.HAPTIC_FEEDBACK] ?: defaults.hapticFeedback,
             voiceNotes = prefs[Keys.VOICE_NOTES] ?: defaults.voiceNotes,
+            pocketTapEnabled = prefs[Keys.POCKET_TAP_ENABLED] ?: defaults.pocketTapEnabled,
         )
     }
 
@@ -137,6 +139,10 @@ class SettingsRepository(private val context: Context) {
 
     suspend fun setVoiceNotes(value: Boolean) = context.dataStore.edit {
         it[Keys.VOICE_NOTES] = value
+    }
+
+    suspend fun setPocketTapEnabled(value: Boolean) = context.dataStore.edit {
+        it[Keys.POCKET_TAP_ENABLED] = value
     }
 
     suspend fun setDraftObservation(text: String) = context.dataStore.edit {

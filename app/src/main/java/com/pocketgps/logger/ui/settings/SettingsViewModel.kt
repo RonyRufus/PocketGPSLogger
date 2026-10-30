@@ -99,6 +99,10 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
         viewModelScope.launch { settingsRepository.setVoiceNotes(value) }
     }
 
+    fun setPocketTapEnabled(value: Boolean) {
+        viewModelScope.launch { settingsRepository.setPocketTapEnabled(value) }
+    }
+
     fun importModel(uri: Uri) {
         if (EngineProvider.isSessionActive()) {
             _modelOp.value = ModelOp.Failed(STOP_FIRST_MESSAGE)

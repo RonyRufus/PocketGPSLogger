@@ -58,6 +58,8 @@ data class AppSettings(
      * accuracy, no notes).
      */
     val voiceNotes: Boolean = true,
+    /** Enable experimental double-tap capture while hands-free service is active. */
+    val pocketTapEnabled: Boolean = true,
 ) {
     /** Display helper: the first configured trigger. */
     val primaryTrigger: String get() = triggerPhrases.firstOrNull() ?: DEFAULT_TRIGGER_PHRASE

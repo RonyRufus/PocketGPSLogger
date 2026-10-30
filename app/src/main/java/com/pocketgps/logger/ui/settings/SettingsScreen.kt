@@ -90,6 +90,15 @@ fun SettingsScreen(
             )
         }
 
+        SectionCard(title = "Pocket gesture") {
+            SwitchRow(
+                title = "Capture on double tap",
+                subtitle = "While hands-free mode is active, double-tap the phone to save a spot. Sensor and screen-off behavior varies by device.",
+                checked = settings.pocketTapEnabled,
+                onCheckedChange = viewModel::setPocketTapEnabled,
+            )
+        }
+
         SectionCard(title = "Confirmation") {
             Text(
                 "How the app acknowledges a save through the connected earphone.",
@@ -243,7 +252,7 @@ fun SettingsScreen(
 
         SectionCard(title = "About") {
             Text(
-                "Pocket GPS Logger saves a spot when you speak your trigger phrase. " +
+                "Pocket GPS Logger saves spots through voice triggers and, when enabled, a double-tap gesture. " +
                     "Recognition and storage are fully offline after the model is installed. " +
                     "Listening runs in a microphone foreground service with a visible notification.",
                 style = MaterialTheme.typography.bodySmall,

@@ -122,11 +122,14 @@ class HandsFreeService : android.app.Service() {
     private var wakeLockJob: Job? = null
 
     private var wakeLock: PowerManager.WakeLock? = null
+    private var pocketTapDetector: PocketTapDetector? = null
     private var wakeLockHeldSinceMono = 0L
     private var cumulativeWakeLockMs = 0L
 
     @Volatile private var currentSettings = AppSettings()
     @Volatile private var listeningActive = false
+    @Volatile private var pocketTapActive = false
+    @Volatile private var pocketTapScreenOffCapable = false
 
     private val audioManager: AudioManager? by lazy { getSystemService(AudioManager::class.java) }
     private val powerManager: PowerManager by lazy { getSystemService(PowerManager::class.java) }
@@ -210,6 +213,8 @@ class HandsFreeService : android.app.Service() {
         notificationJob?.cancel()
         wakeLockJob?.cancel()
         releaseAudio()
+        pocketTapDetector?.stop()
+        pocketTapDetector = null
         releaseWakeLock()
         confirmation.shutdown()
         unregisterHeadsetReceiver()
@@ -277,6 +282,8 @@ class HandsFreeService : android.app.Service() {
         wakeLockJob?.cancel(); wakeLockJob = null
         locationAcquirer.stopPreWarm()
         releaseAudio()
+        pocketTapDetector?.stop()
+        pocketTapDetector = null
         releaseWakeLock()
         engine.markDisabled()
         confirmation.shutdown()
@@ -415,9 +422,41 @@ class HandsFreeService : android.app.Service() {
         mic = null
     }
 
+    private fun updatePocketTapDetector(enabled: Boolean) {
+        if (!enabled) {
+            pocketTapDetector?.stop()
+            pocketTapDetector = null
+            pocketTapActive = false
+            pocketTapScreenOffCapable = false
+            return
+        }
+        if (pocketTapDetector != null) return
+        val detector = PocketTapDetector(this) {
+            val capturedAt = System.currentTimeMillis()
+            Log.d(TAG, "Pocket double-tap detected; handing off to capture engine")
+            engine.onTriggerDetected(capturedAt, "pocket double tap", null, null)
+            updateNotification()
+        }
+        if (!detector.start()) {
+            Log.w(TAG, "No supported motion sensor; pocket tap trigger unavailable")
+            detector.stop()
+            pocketTapActive = false
+            pocketTapScreenOffCapable = false
+            return
+        }
+        pocketTapDetector = detector
+        pocketTapActive = true
+        pocketTapScreenOffCapable = detector.hasWakeUpSensor
+        if (!pocketTapScreenOffCapable) {
+            Log.w(TAG, "Only a non-wakeup motion sensor is available; screen-off tap delivery is not guaranteed")
+        }
+        updateNotification()
+    }
+
     private fun onSettingsChanged(settings: AppSettings) {
         currentSettings = settings
         engine.updateSettings(settings)
+        updatePocketTapDetector(settings.pocketTapEnabled && listeningActive)
         // Pre-warm follows its toggle live; the subscription is idempotent.
         if (settings.gpsPreWarm && listeningActive) {
             locationAcquirer.startPreWarm()
@@ -567,9 +606,17 @@ class HandsFreeService : android.app.Service() {
 
             ListenerState.LISTENING -> {
                 title = "Listening for \"${ui.triggerPhrase}\""
-                text = ui.lastSaved?.let {
-                    "Last saved: ${formatClock(it.triggerTimestamp)}"
-                } ?: "Say the phrase to save this spot"
+                text = when {
+                    pocketTapActive && pocketTapScreenOffCapable ->
+                        "Voice + pocket tap active"
+                    pocketTapActive ->
+                        "Voice active; screen-off tap is device-limited"
+                    currentSettings.pocketTapEnabled ->
+                        "Voice active; pocket tap sensor unavailable"
+                    else -> ui.lastSaved?.let {
+                        "Last saved: ${formatClock(it.triggerTimestamp)}"
+                    } ?: "Say the phrase to save this spot"
+                }
             }
 
             ListenerState.CAPTURING -> {

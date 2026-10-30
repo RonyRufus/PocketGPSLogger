@@ -34,6 +34,21 @@ Still out of scope: AI summaries, reminders, cloud sync, dashboards and speaker 
 
 ---
 
+## Pocket double-tap trigger (experimental)
+
+When Hands-free Mode is running, the foreground service also listens for a deliberate double physical
+tap using the device's linear-acceleration sensor, or a filtered accelerometer fallback. A detected
+gesture enters the same GPS-and-database capture pipeline as a voice trigger and uses the existing
+haptic confirmation setting. It requires no extra runtime permission.
+
+- The gesture detector only runs while Hands-free Mode is active.
+- Keep the app's ongoing notification visible; Android/OEM battery controls can still stop background work.
+- Sensor thresholds vary by phone, case, and pocket. This is experimental until tested on the target device.
+- Walking, vehicle vibration, or handling the phone can cause false detections; the two-impact window and
+  cooldown reduce, but cannot eliminate, false positives.
+- Configure and test the gesture while stationary. Do not interact with the phone while riding.
+- If the phone has no suitable motion sensor, voice and manual capture remain available.
+
 ## 2. Project layout
 
 ```
