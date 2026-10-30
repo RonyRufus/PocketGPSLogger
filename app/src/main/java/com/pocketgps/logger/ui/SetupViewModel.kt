@@ -1,143 +1,118 @@
 package com.pocketgps.logger.ui
 
 import android.app.Application
+import android.content.Context
 import android.content.pm.PackageManager
-import android.net.Uri
+import android.hardware.Sensor
+import android.hardware.SensorEvent
+import android.hardware.SensorEventListener
+import android.hardware.SensorManager
+import android.os.PowerManager
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.pocketgps.logger.ServiceLocator
-import com.pocketgps.logger.audio.PhraseTestRunner
-import com.pocketgps.logger.engine.EngineProvider
-import com.pocketgps.logger.engine.ListenerUiState
-import com.pocketgps.logger.model.ModelManager
+import com.pocketgps.logger.engine.ServiceBus
+import com.pocketgps.logger.sensor.TapDetector
+import com.pocketgps.logger.sensor.TapSensitivity
 import com.pocketgps.logger.settings.AppSettings
-import kotlinx.coroutines.ExperimentalCoroutinesApi
-import kotlinx.coroutines.Job
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.flatMapLatest
-import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.firstOrNull
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import kotlin.math.sqrt
 
-/** Backs the guided Setup screen: permissions, model install and phrase test. */
-@OptIn(ExperimentalCoroutinesApi::class)
-class SetupViewModel(application: Application) : AndroidViewModel(application) {
+/**
+ * Backs the setup screen: permissions, battery-optimisation exemption and the **live tap test**
+ * that lets the user verify double-tap detection before relying on it in the pocket.
+ */
+class SetupViewModel(application: Application) : AndroidViewModel(application), SensorEventListener {
 
-    private val modelManager = ServiceLocator.modelManager
     private val settingsRepository = ServiceLocator.settingsRepository
-    private val testRunner = PhraseTestRunner(modelManager)
+    private val sensorManager =
+        application.getSystemService(Context.SENSOR_SERVICE) as SensorManager
+    private val accelerometer = sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
 
     val settings: StateFlow<AppSettings> = settingsRepository.settings
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), AppSettings())
 
-    /** Live listening state, used to disable the phrase test while the service owns the mic. */
-    val engineState: StateFlow<ListenerUiState> = EngineProvider.engine
-        .flatMapLatest { engine -> engine?.uiState ?: flowOf(ListenerUiState()) }
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), ListenerUiState())
+    val serviceStatus: StateFlow<ServiceBus.Status> = ServiceBus.status
 
-    sealed interface ModelOp {
-        data object Idle : ModelOp
-        data class Working(val message: String, val progress: Float? = null) : ModelOp
-        data class Done(val message: String) : ModelOp
-        data class Failed(val message: String) : ModelOp
-    }
+    private var testDetector: TapDetector? = null
+    private var testSensitivity = TapSensitivity.NORMAL
 
-    sealed interface TestState {
-        data object Idle : TestState
-        data object Listening : TestState
-        data class Partial(val text: String) : TestState
-        data class Finished(val matched: Boolean, val message: String) : TestState
-    }
+    data class TapTestState(
+        val running: Boolean = false,
+        val spikes: Long = 0,
+        val doubleTaps: Long = 0,
+        val hasAccelerometer: Boolean = true,
+    )
 
-    private val _modelOp = MutableStateFlow<ModelOp>(ModelOp.Idle)
-    val modelOp: StateFlow<ModelOp> = _modelOp
+    private val _tapTest = MutableStateFlow(TapTestState())
+    val tapTest: StateFlow<TapTestState> = _tapTest
 
-    private val _modelStatus = MutableStateFlow<ModelManager.Status>(modelManager.status())
-    val modelStatus: StateFlow<ModelManager.Status> = _modelStatus
-
-    private val _storageBytes = MutableStateFlow(modelManager.storageBytes())
-    val storageBytes: StateFlow<Long> = _storageBytes
-
-    private val _testState = MutableStateFlow<TestState>(TestState.Idle)
-    val testState: StateFlow<TestState> = _testState
-
-    private var testJob: Job? = null
-
-    fun refreshModel() {
-        _modelStatus.value = modelManager.status()
-        _storageBytes.value = modelManager.storageBytes()
-    }
-
-    fun setTriggerPhrase(phrase: String) {
-        viewModelScope.launch { settingsRepository.setTriggerPhrase(phrase) }
-    }
-
-    fun importModel(uri: Uri) {
-        if (EngineProvider.isSessionActive()) {
-            _modelOp.value = ModelOp.Failed(STOP_FIRST_MESSAGE)
+    /** Begin listening with the detector in the UI process. Purely for calibration. */
+    fun startTapTest() {
+        if (_tapTest.value.running) return
+        if (accelerometer == null) {
+            _tapTest.value = TapTestState(running = false, hasAccelerometer = false)
             return
         }
-        viewModelScope.launch {
-            _modelOp.value = ModelOp.Working("Extracting model…")
-            when (val result = modelManager.importFromZip(uri)) {
-                is ModelManager.ImportResult.Success -> {
-                    refreshModel()
-                    _modelOp.value = ModelOp.Done("Model installed")
-                }
-
-                is ModelManager.ImportResult.Failure -> _modelOp.value = ModelOp.Failed(result.reason)
-            }
-        }
-    }
-
-    fun downloadModel() {
-        if (EngineProvider.isSessionActive()) {
-            _modelOp.value = ModelOp.Failed(STOP_FIRST_MESSAGE)
-            return
-        }
-        viewModelScope.launch {
-            _modelOp.value = ModelOp.Working("Downloading model…", 0f)
-            val result = modelManager.downloadAndImport(
-                url = ModelManager.SMALL_EN_US_URL,
-                onProgress = { downloaded, total ->
-                    val progress = if (total > 0) downloaded.toFloat() / total else null
-                    _modelOp.value = ModelOp.Working("Downloading model…", progress)
-                },
+        viewModelScope.launch(Dispatchers.Default) {
+            val sensitivity = settingsRepository.settings.firstOrNull()?.tapSensitivity
+                ?: TapSensitivity.NORMAL
+            testSensitivity = sensitivity
+            val detector = TapDetector(
+                spikeG = TapDetector.spikeFor(sensitivity),
+                clock = { android.os.SystemClock.elapsedRealtime() },
             )
-            when (result) {
-                is ModelManager.ImportResult.Success -> {
-                    refreshModel()
-                    _modelOp.value = ModelOp.Done("Model installed")
-                }
-
-                is ModelManager.ImportResult.Failure -> _modelOp.value = ModelOp.Failed(result.reason)
-            }
-        }
-    }
-
-    fun runPhraseTest(triggerPhrase: String) {
-        if (testJob?.isActive == true) return
-        if (EngineProvider.isSessionActive()) {
-            _testState.value = TestState.Finished(false, "Stop hands-free listening first")
-            return
-        }
-        _testState.value = TestState.Listening
-        testJob = viewModelScope.launch {
-            val result = testRunner.run(
-                triggerPhrase = triggerPhrase,
-                durationMs = 8_000L,
-                onPartial = { partial ->
-                    if (partial.isNotBlank()) _testState.value = TestState.Partial(partial)
-                },
+            testDetector = detector
+            _tapTest.value = TapTestState(running = true, hasAccelerometer = true)
+            sensorManager.registerListener(
+                this@SetupViewModel,
+                accelerometer,
+                SensorManager.SENSOR_DELAY_GAME,
             )
-            _testState.value = TestState.Finished(result.matched, result.message)
         }
     }
 
-    fun hasMicrophonePermission(): Boolean = check(android.Manifest.permission.RECORD_AUDIO)
+    fun stopTapTest() {
+        runCatching { sensorManager.unregisterListener(this) }
+        testDetector = null
+        _tapTest.value = _tapTest.value.copy(running = false)
+    }
+
+    fun resetTapTest() {
+        testDetector?.reset()
+        _tapTest.value = _tapTest.value.copy(spikes = 0, doubleTaps = 0)
+    }
+
+    override fun onSensorChanged(event: SensorEvent) {
+        if (event.sensor.type != Sensor.TYPE_ACCELEROMETER) return
+        val d = testDetector ?: return
+        val magnitudeG = sqrt(
+            event.values[0] * event.values[0] +
+                event.values[1] * event.values[1] +
+                event.values[2] * event.values[2],
+        ) / 9.80665f
+        val timestampMs = android.os.SystemClock.elapsedRealtime() + event.timestamp / 1_000_000L
+        d.feed(timestampMs, magnitudeG)
+        _tapTest.value = _tapTest.value.copy(
+            spikes = d.spikesSeen,
+            doubleTaps = d.doubleTaps,
+        )
+    }
+
+    override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) = Unit
+
+    fun setTapSensitivity(value: TapSensitivity) {
+        viewModelScope.launch { settingsRepository.setTapSensitivity(value) }
+    }
+
+    fun hasAccelerometer(): Boolean = accelerometer != null
 
     fun hasLocationPermission(): Boolean =
         check(android.Manifest.permission.ACCESS_FINE_LOCATION) ||
@@ -147,14 +122,19 @@ class SetupViewModel(application: Application) : AndroidViewModel(application) {
         android.os.Build.VERSION.SDK_INT < android.os.Build.VERSION_CODES.TIRAMISU ||
             check(android.Manifest.permission.POST_NOTIFICATIONS)
 
-    fun isModelReady(): Boolean = modelManager.isReady()
+    /** True when the OEM battery manager is told to leave the foreground service alone. */
+    fun isIgnoringBatteryOptimizations(): Boolean {
+        val pm = getApplication<Application>()
+            .getSystemService(Context.POWER_SERVICE) as PowerManager
+        return pm.isIgnoringBatteryOptimizations(getApplication<Application>().packageName)
+    }
 
     private fun check(permission: String): Boolean =
-        ContextCompat.checkSelfPermission(getApplication<android.app.Application>(), permission) ==
+        ContextCompat.checkSelfPermission(getApplication(), permission) ==
             PackageManager.PERMISSION_GRANTED
 
-    private companion object {
-        const val STOP_FIRST_MESSAGE =
-            "Stop hands-free listening before changing the speech model"
+    override fun onCleared() {
+        stopTapTest()
+        super.onCleared()
     }
 }

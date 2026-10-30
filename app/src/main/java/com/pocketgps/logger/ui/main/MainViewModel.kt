@@ -8,43 +8,31 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.pocketgps.logger.ServiceLocator
 import com.pocketgps.logger.data.LocationRecord
-import com.pocketgps.logger.engine.EngineProvider
-import com.pocketgps.logger.engine.ListenerUiState
-import com.pocketgps.logger.feedback.HapticCue
+import com.pocketgps.logger.engine.SavePipeline
+import com.pocketgps.logger.engine.ServiceBus
 import com.pocketgps.logger.location.LocationAcquirer
-import com.pocketgps.logger.model.ModelManager
+import com.pocketgps.logger.service.TapLogService
 import com.pocketgps.logger.settings.AppSettings
-import kotlinx.coroutines.ExperimentalCoroutinesApi
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.firstOrNull
-import kotlinx.coroutines.flow.flatMapLatest
-import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 
 /**
- * Backs the Main screen. Observes the service-owned engine (or a disabled default when the
- * service is not running), the persisted settings, and the latest saved record.
- *
- * The manual "Save spot now" path lives here so it works whether or not the listening
- * service is running; it uses the same acquire → insert contract as the engine.
+ * Backs the Main screen. Observes the tap-logging service via [ServiceBus] (no binding), the
+ * persisted settings, and the latest saved record. The big Save button and Undo use the shared
+ * [SavePipeline], so they behave exactly like pocket taps and notification actions.
  */
-@OptIn(ExperimentalCoroutinesApi::class)
 class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private val repository = ServiceLocator.locationRepository
     private val settingsRepository = ServiceLocator.settingsRepository
-    private val modelManager = ServiceLocator.modelManager
-    private val locationAcquirer = LocationAcquirer(application)
-    private val haptics = HapticCue(application)
+    private val pipeline = ServiceLocator.savePipeline
+    private val acquirer = LocationAcquirer(application)
 
-    val engineState: StateFlow<ListenerUiState> = EngineProvider.engine
-        .flatMapLatest { engine -> engine?.uiState ?: flowOf(ListenerUiState()) }
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), ListenerUiState())
+    val serviceStatus: StateFlow<ServiceBus.Status> = ServiceBus.status
 
     val settings: StateFlow<AppSettings> = settingsRepository.settings
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), AppSettings())
@@ -55,87 +43,40 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val savedCount: StateFlow<Int> = repository.observeCount()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), 0)
 
-    sealed interface ManualSaveOp {
-        data object Idle : ManualSaveOp
-        data object Working : ManualSaveOp
-        data class Done(val record: LocationRecord) : ManualSaveOp
-        data class Failed(val reason: String) : ManualSaveOp
+    sealed interface SaveOp {
+        data object Idle : SaveOp
+        data object Working : SaveOp
+        data class Done(val record: LocationRecord) : SaveOp
+        data class Failed(val reason: String) : SaveOp
     }
 
-    private val _manualSave = MutableStateFlow<ManualSaveOp>(ManualSaveOp.Idle)
-    val manualSave: StateFlow<ManualSaveOp> = _manualSave
+    private val _saveOp = MutableStateFlow<SaveOp>(SaveOp.Idle)
+    val saveOp: StateFlow<SaveOp> = _saveOp
 
-    private val _modelStatus = MutableStateFlow<ModelManager.Status>(ModelManager.Status.Missing)
-    val modelStatus: StateFlow<ModelManager.Status> = _modelStatus
-
-    fun refresh() {
-        _modelStatus.value = modelManager.status()
-    }
-
-    /** One-shot manual save from the Main screen button; independent of the listening service. */
+    /** One-shot manual save from the big button; same pipeline as taps and the notification. */
     fun saveSpotNow() {
-        if (_manualSave.value == ManualSaveOp.Working) return
-        _manualSave.value = ManualSaveOp.Working
+        if (_saveOp.value == SaveOp.Working) return
+        _saveOp.value = SaveOp.Working
         viewModelScope.launch {
-            try {
-                val settings = settingsRepository.settings.firstOrNull() ?: AppSettings()
-                val triggerAt = System.currentTimeMillis()
-                when (val result = locationAcquirer.acquire(triggerAt, settings)) {
-                    is LocationAcquirer.Result.Success -> {
-                        val record = LocationRecord(
-                            latitude = result.fix.latitude,
-                            longitude = result.fix.longitude,
-                            triggerTimestamp = triggerAt,
-                            locationTimestamp = result.fix.fixTimestampMs,
-                            accuracyMeters = result.fix.accuracyMeters,
-                            locationSource = result.fix.source.wire,
-                            locationAgeSeconds = result.fix.ageSeconds,
-                            triggerPhrase = "manual save",
-                            saveStatus = "success",
-                            notes = manualSaveWarning(result.fix, settings),
-                        )
-                        val id = withContext(Dispatchers.IO) {
-                            runCatching { repository.insert(record) }.getOrNull()
-                        }
-                        if (id == null) {
-                            if (settings.hapticFeedback) haptics.failure()
-                            _manualSave.value = ManualSaveOp.Failed("Save failed — not committed")
-                        } else {
-                            if (settings.hapticFeedback) haptics.success()
-                            _manualSave.value = ManualSaveOp.Done(record.copy(id = id))
-                        }
-                    }
-
-                    is LocationAcquirer.Result.Unavailable -> {
-                        if (settings.hapticFeedback) haptics.failure()
-                        _manualSave.value = ManualSaveOp.Failed(result.reason)
-                    }
-                }
-            } catch (t: Throwable) {
-                _manualSave.value = ManualSaveOp.Failed(t.message ?: "Save failed")
+            val settings = settingsRepository.settings.firstOrNull() ?: AppSettings()
+            when (val result = pipeline.save("button", settings)) {
+                is SavePipeline.Result.Saved -> _saveOp.value = SaveOp.Done(result.record)
+                is SavePipeline.Result.Unavailable -> _saveOp.value = SaveOp.Failed(result.reason)
+                is SavePipeline.Result.WriteFailed -> _saveOp.value = SaveOp.Failed(result.reason)
             }
         }
     }
 
-    fun clearManualSaveOp() {
-        _manualSave.value = ManualSaveOp.Idle
+    fun clearSaveOp() {
+        _saveOp.value = SaveOp.Idle
     }
 
-    private fun manualSaveWarning(fix: LocationAcquirer.Fix, settings: AppSettings): String? {
-        val parts = mutableListOf<String>()
-        if (fix.source == com.pocketgps.logger.location.LocationSource.FALLBACK) {
-            parts += "Stale fix used after GPS timeout (age ${fix.ageSeconds ?: 0}s)"
+    /** Undo the most recent save regardless of which input produced it. */
+    fun undoLastSave(onResult: (Boolean) -> Unit = {}) {
+        viewModelScope.launch {
+            onResult(pipeline.undoLast())
         }
-        val accuracy = fix.accuracyMeters
-        if (accuracy != null && accuracy > settings.maxAccuracyMeters) {
-            parts += "Poor GPS accuracy (${accuracy.toInt()} m)"
-        }
-        return parts.takeIf { it.isNotEmpty() }?.joinToString("; ")
     }
-
-    fun hasMicrophonePermission(): Boolean = check(
-        android.Manifest.permission.RECORD_AUDIO,
-    )
 
     fun hasLocationPermission(): Boolean =
         check(android.Manifest.permission.ACCESS_FINE_LOCATION) ||
@@ -146,20 +87,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             check(android.Manifest.permission.POST_NOTIFICATIONS)
 
     fun isGpsReady(): Boolean =
-        locationAcquirer.hasPermission() && locationAcquirer.isAnyProviderEnabled()
+        acquirer.hasPermission() && acquirer.isAnyProviderEnabled()
 
-    fun startListening() {
-        val context = getApplication<android.app.Application>()
-        com.pocketgps.logger.service.HandsFreeService.start(context)
+    fun startTapLogging() {
+        TapLogService.start(getApplication())
     }
 
-    fun stopListening() {
-        val context = getApplication<android.app.Application>()
-        com.pocketgps.logger.service.HandsFreeService.stop(context)
-    }
-
-    fun deleteRecord(id: Long) {
-        viewModelScope.launch { repository.delete(id) }
+    fun stopTapLogging() {
+        TapLogService.stop(getApplication())
     }
 
     private fun check(permission: String): Boolean =

@@ -18,8 +18,8 @@ android {
         applicationId = "com.pocketgps.logger"
         minSdk = 26
         targetSdk = 34
-        versionCode = 2
-        versionName = "1.1.0"
+        versionCode = 3
+        versionName = "2.0.0"
 
         // The UI is English-only. Strips every other translation AndroidX/Compose/Play
         // libraries bundle (locale tables for 80+ languages) from the APK.
@@ -136,16 +136,11 @@ dependencies {
     // DataStore
     implementation("androidx.datastore:datastore-preferences:1.1.1")
 
-    // Offline keyword spotting (Vosk) + JNA runtime it requires
-    implementation("com.alphacephei:vosk-android:0.3.47")
-    implementation("net.java.dev.jna:jna:5.13.0@aar")
+    // Offline keyword spotting was removed in v2 — the app is tap-first, no speech model.
 
     // Fused Location Provider (primary); LocationManager used as fallback when Play Services
     // is absent. Only the location module is pulled in, not the full play-services bundle.
     implementation("com.google.android.gms:play-services-location:21.3.0")
-
-    // JSON import/export (pure JVM)
-    implementation("com.google.code.gson:gson:2.10.1")
 
     // Unit tests
     testImplementation("junit:junit:4.13.2")

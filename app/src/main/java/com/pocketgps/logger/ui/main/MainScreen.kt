@@ -1,7 +1,9 @@
 package com.pocketgps.logger.ui.main
 
 import android.Manifest
+import android.content.Intent
 import android.os.Build
+import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
@@ -18,6 +20,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -30,15 +33,13 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
-import com.pocketgps.logger.engine.ListenerState
-import com.pocketgps.logger.engine.ListenerUiState
-import com.pocketgps.logger.model.ModelManager
+import com.pocketgps.logger.engine.ServiceBus
 import com.pocketgps.logger.ui.common.LabeledValue
 import com.pocketgps.logger.ui.common.SectionCard
 import com.pocketgps.logger.ui.common.StatusDot
@@ -50,13 +51,11 @@ fun MainScreen(
     onOpenSetup: () -> Unit,
     viewModel: MainViewModel = viewModel(),
 ) {
-    val engineState by viewModel.engineState.collectAsStateWithLifecycle()
+    val status by viewModel.serviceStatus.collectAsStateWithLifecycle()
     val latest by viewModel.latest.collectAsStateWithLifecycle()
     val count by viewModel.savedCount.collectAsStateWithLifecycle()
-    val modelStatus by viewModel.modelStatus.collectAsStateWithLifecycle()
-    val manualSave by viewModel.manualSave.collectAsStateWithLifecycle()
+    val saveOp by viewModel.saveOp.collectAsStateWithLifecycle()
 
-    var hasMic by remember { mutableStateOf(viewModel.hasMicrophonePermission()) }
     var hasLocation by remember { mutableStateOf(viewModel.hasLocationPermission()) }
     var hasNotification by remember { mutableStateOf(viewModel.hasNotificationPermission()) }
     var gpsReady by remember { mutableStateOf(viewModel.isGpsReady()) }
@@ -64,28 +63,21 @@ fun MainScreen(
     val permissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions(),
     ) {
-        hasMic = viewModel.hasMicrophonePermission()
         hasLocation = viewModel.hasLocationPermission()
         hasNotification = viewModel.hasNotificationPermission()
         gpsReady = viewModel.isGpsReady()
-        viewModel.refresh()
     }
 
     LifecycleResumeEffect(Unit) {
-        viewModel.refresh()
-        hasMic = viewModel.hasMicrophonePermission()
         hasLocation = viewModel.hasLocationPermission()
         hasNotification = viewModel.hasNotificationPermission()
         gpsReady = viewModel.isGpsReady()
         onPauseOrDispose { }
     }
 
-    val modelReady = modelStatus is ModelManager.Status.Ready
-    val context = androidx.compose.ui.platform.LocalContext.current
-    val canStart = modelReady && hasMic && hasLocation && gpsReady
-
+    val context = LocalContext.current
+    val running = status.isRunning
     val missingPermissions = buildList {
-        if (!hasMic) add(Manifest.permission.RECORD_AUDIO)
         if (!hasLocation) {
             add(Manifest.permission.ACCESS_FINE_LOCATION)
             add(Manifest.permission.ACCESS_COARSE_LOCATION)
@@ -108,23 +100,13 @@ fun MainScreen(
             fontWeight = FontWeight.Bold,
         )
 
-        StatusBanner(engineState)
-
-        if (!modelReady) {
-            SectionCard(title = "Speech model required") {
-                Text(
-                    "Install the offline Vosk model to start hands-free listening.",
-                    style = MaterialTheme.typography.bodyMedium,
-                )
-                Spacer(Modifier.height(8.dp))
-                Button(onClick = onOpenSetup) { Text("Open setup") }
-            }
-        }
+        StatusBanner(status)
 
         if (missingPermissions.isNotEmpty()) {
             SectionCard(title = "Permissions needed") {
                 Text(
-                    "Microphone and precise location are required for hands-free saving.",
+                    "Location permission is needed to save spots; the notification keeps tap " +
+                        "logging alive while the phone is locked.",
                     style = MaterialTheme.typography.bodyMedium,
                 )
                 Spacer(Modifier.height(8.dp))
@@ -137,16 +119,18 @@ fun MainScreen(
         if (hasLocation && !gpsReady) {
             SectionCard(title = "Location services are off") {
                 Text(
-                    "Hands-free saving needs device location to be switched on.",
+                    "Saving a spot needs device location to be switched on.",
                     style = MaterialTheme.typography.bodyMedium,
                 )
                 Spacer(Modifier.height(8.dp))
                 Button(
                     onClick = {
-                        val intent = android.content.Intent(
-                            android.provider.Settings.ACTION_LOCATION_SOURCE_SETTINGS,
-                        ).addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
-                        runCatching { context.startActivity(intent) }
+                        runCatching {
+                            context.startActivity(
+                                Intent(Settings.ACTION_LOCATION_SOURCE_SETTINGS)
+                                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                            )
+                        }
                     },
                 ) { Text("Open location settings") }
             }
@@ -154,25 +138,18 @@ fun MainScreen(
 
         Button(
             onClick = {
-                if (engineState.isListening) {
-                    viewModel.stopListening()
-                } else if (!canStart) {
-                    when {
-                        !modelReady -> onOpenSetup()
-                        missingPermissions.isNotEmpty() ->
-                            permissionLauncher.launch(missingPermissions.toTypedArray())
-                        !gpsReady -> runCatching {
-                            context.startActivity(
-                                android.content.Intent(
-                                    android.provider.Settings.ACTION_LOCATION_SOURCE_SETTINGS,
-                                ).addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK),
-                            )
-                        }
-
-                        else -> Unit
+                when {
+                    running -> viewModel.stopTapLogging()
+                    missingPermissions.isNotEmpty() ->
+                        permissionLauncher.launch(missingPermissions.toTypedArray())
+                    !gpsReady -> runCatching {
+                        context.startActivity(
+                            Intent(Settings.ACTION_LOCATION_SOURCE_SETTINGS)
+                                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                        )
                     }
-                } else {
-                    viewModel.startListening()
+
+                    else -> viewModel.startTapLogging()
                 }
             },
             modifier = Modifier
@@ -180,21 +157,18 @@ fun MainScreen(
                 .heightIn(min = 72.dp),
             shape = RoundedCornerShape(16.dp),
             colors = ButtonDefaults.buttonColors(
-                containerColor = if (engineState.isListening) {
-                    MaterialTheme.colorScheme.error
-                } else {
-                    MaterialTheme.colorScheme.primary
-                },
+                containerColor = if (running) MaterialTheme.colorScheme.error
+                else MaterialTheme.colorScheme.primary,
             ),
         ) {
             Icon(
-                imageVector = if (engineState.isListening) AppIcons.Stop else AppIcons.PlayArrow,
+                imageVector = if (running) AppIcons.Stop else AppIcons.PlayArrow,
                 contentDescription = null,
                 modifier = Modifier.size(28.dp),
             )
             Spacer(Modifier.size(12.dp))
             Text(
-                text = if (engineState.isListening) "Stop Listening" else "Start Hands-Free Mode",
+                text = if (running) "Stop tap logging" else "Start tap logging",
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.SemiBold,
             )
@@ -202,14 +176,14 @@ fun MainScreen(
 
         OutlinedButton(
             onClick = viewModel::saveSpotNow,
-            enabled = hasLocation && gpsReady && manualSave != MainViewModel.ManualSaveOp.Working,
+            enabled = hasLocation && gpsReady && saveOp != MainViewModel.SaveOp.Working,
             modifier = Modifier
                 .fillMaxWidth()
-                .heightIn(min = 52.dp),
+                .heightIn(min = 56.dp),
             shape = RoundedCornerShape(16.dp),
         ) {
-            if (manualSave == MainViewModel.ManualSaveOp.Working) {
-                androidx.compose.material3.CircularProgressIndicator(
+            if (saveOp == MainViewModel.SaveOp.Working) {
+                CircularProgressIndicator(
                     modifier = Modifier.size(20.dp),
                     strokeWidth = 2.dp,
                 )
@@ -222,12 +196,12 @@ fun MainScreen(
                     modifier = Modifier.size(22.dp),
                 )
                 Spacer(Modifier.size(12.dp))
-                Text("Save spot now (no voice)")
+                Text("Save spot now")
             }
         }
 
-        when (val op = manualSave) {
-            is MainViewModel.ManualSaveOp.Done -> SectionCard(title = "Spot saved") {
+        when (val op = saveOp) {
+            is MainViewModel.SaveOp.Done -> SectionCard(title = "Spot saved") {
                 Text(
                     Formatters.coordinates(op.record.latitude, op.record.longitude),
                     style = MaterialTheme.typography.bodyLarge,
@@ -240,44 +214,52 @@ fun MainScreen(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 Spacer(Modifier.height(4.dp))
-                TextButton(onClick = viewModel::clearManualSaveOp) { Text("Dismiss") }
+                Row {
+                    TextButton(onClick = viewModel::clearSaveOp) { Text("Dismiss") }
+                    TextButton(onClick = {
+                        viewModel.undoLastSave()
+                        viewModel.clearSaveOp()
+                    }) { Text("Undo") }
+                }
             }
 
-            is MainViewModel.ManualSaveOp.Failed -> SectionCard(title = "Could not save") {
+            is MainViewModel.SaveOp.Failed -> SectionCard(title = "Could not save") {
                 Text(
                     op.reason,
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.error,
                 )
                 Spacer(Modifier.height(4.dp))
-                TextButton(onClick = viewModel::clearManualSaveOp) { Text("Dismiss") }
+                TextButton(onClick = viewModel::clearSaveOp) { Text("Dismiss") }
             }
 
             else -> Unit
         }
 
         SectionCard(title = "Status") {
-            LabeledValue("Listening state", stateLabel(engineState.state))
-            LabeledValue("Microphone permission", if (hasMic) "Granted" else "Missing")
+            LabeledValue("Tap logging", if (running) "Active" else "Off")
             LabeledValue(
-                "Location permission",
-                if (hasLocation) "Granted" else "Missing",
+                "Sensors",
+                when {
+                    !running -> "Idle"
+                    status.motionGated -> "Parked (battery saver)"
+                    else -> "Listening for taps"
+                },
             )
+            LabeledValue("Raw spikes this session", status.tapsDetected.toString())
+            LabeledValue("Saves this session", status.savesThisSession.toString())
+            LabeledValue("Location permission", if (hasLocation) "Granted" else "Missing")
             LabeledValue("GPS enabled", if (gpsReady) "Yes" else "No")
-            LabeledValue("Model", if (modelReady) "Installed" else "Missing")
-            LabeledValue(
-                "Earphone",
-                if (engineState.headsetConnected) "Connected" else "Not detected",
-            )
-            engineState.inputRoute?.let { LabeledValue("Mic route", it) }
             LabeledValue("Saved records", count.toString())
+            TextButton(onClick = onOpenSetup) { Text("Open setup & tap test") }
         }
 
         SectionCard(title = "Last saved location") {
             val record = latest
             if (record == null) {
                 Text(
-                    "No locations saved yet. Say \"${engineState.triggerPhrase}\" while listening.",
+                    "Nothing saved yet. Start tap logging and double-tap the phone in your " +
+                        "pocket — or press “Save spot now”.",
                     style = MaterialTheme.typography.bodyMedium,
                 )
             } else {
@@ -295,7 +277,8 @@ fun MainScreen(
                             fontWeight = FontWeight.Medium,
                         )
                         Text(
-                            Formatters.timestamp(record.triggerTimestamp),
+                            Formatters.timestamp(record.triggerTimestamp) + "  •  " +
+                                record.triggerPhrase,
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
@@ -307,9 +290,7 @@ fun MainScreen(
                     "Source",
                     record.locationSource.replaceFirstChar { it.uppercase() },
                 )
-                record.locationAgeSeconds?.let {
-                    LabeledValue("Fix age", Formatters.age(it))
-                }
+                record.locationAgeSeconds?.let { LabeledValue("Fix age", Formatters.age(it)) }
                 record.notes?.let {
                     Text(
                         it,
@@ -318,53 +299,61 @@ fun MainScreen(
                     )
                 }
                 Spacer(Modifier.height(4.dp))
-                TextButton(
-                    onClick = {
-                        Formatters.openInMap(
-                            context, record.latitude, record.longitude,
-                            "Saved spot",
-                        )
-                    },
-                ) { Text("Open in map") }
+                Row {
+                    TextButton(
+                        onClick = {
+                            Formatters.openInMap(
+                                context, record.latitude, record.longitude, "Saved spot",
+                            )
+                        },
+                    ) { Text("Open in map") }
+                    TextButton(onClick = { viewModel.undoLastSave() }) { Text("Undo last") }
+                }
             }
         }
 
         if (!hasNotification && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             TextButton(
-                onClick = { permissionLauncher.launch(arrayOf(Manifest.permission.POST_NOTIFICATIONS)) },
-            ) { Text("Allow notifications for the listening indicator") }
+                onClick = {
+                    permissionLauncher.launch(arrayOf(Manifest.permission.POST_NOTIFICATIONS))
+                },
+            ) { Text("Allow notifications for the tap-logging indicator") }
         }
     }
 }
 
 @Composable
-private fun StatusBanner(ui: ListenerUiState) {
-    val text = when (ui.state) {
-        ListenerState.DISABLED -> "Hands-free mode is off"
-        ListenerState.INITIALIZING -> "Starting hands-free mode…"
-        ListenerState.LISTENING -> "Listening for \"${ui.triggerPhrase}\""
-        ListenerState.CAPTURING -> "Trigger recognised — getting location…"
-        ListenerState.SAVING -> "Saving location…"
-        ListenerState.RECOVERING -> ui.statusMessage ?: "Recovering audio…"
-        ListenerState.ERROR -> ui.errorMessage ?: "Listening error"
+private fun StatusBanner(status: ServiceBus.Status) {
+    val text = when (status.state) {
+        ServiceBus.State.OFF -> "Tap logging is off"
+        ServiceBus.State.STARTING -> "Starting tap logging…"
+        ServiceBus.State.ARMED -> if (status.motionGated) {
+            "Parked — move the phone to re-arm tap detection"
+        } else {
+            "Double-tap your pocket to save a spot"
+        }
+
+        ServiceBus.State.CAPTURING -> "Tap detected — getting location…"
+        ServiceBus.State.SAVING -> "Saving location…"
+        ServiceBus.State.ERROR -> status.errorMessage ?: "Tap logging error"
     }
-    SectionCard(title = "Hands-free mode") {
+    SectionCard(title = "Tap logging") {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            StatusDot(ok = ui.isListening)
+            StatusDot(ok = status.isRunning && status.state != ServiceBus.State.ERROR)
             Spacer(Modifier.size(8.dp))
             Text(
                 text = text,
                 style = MaterialTheme.typography.bodyLarge,
                 fontWeight = FontWeight.Medium,
-                color = if (ui.state == ListenerState.ERROR) {
+                color = if (status.state == ServiceBus.State.ERROR) {
                     MaterialTheme.colorScheme.error
                 } else {
                     MaterialTheme.colorScheme.onSurface
                 },
             )
         }
-        val message = ui.statusMessage
-        if (message != null && ui.state != ListenerState.RECOVERING && ui.state != ListenerState.ERROR) {
+        val message = status.message
+        if (message != null) {
             Spacer(Modifier.height(4.dp))
             Text(
                 message,
@@ -373,14 +362,4 @@ private fun StatusBanner(ui: ListenerUiState) {
             )
         }
     }
-}
-
-private fun stateLabel(state: ListenerState): String = when (state) {
-    ListenerState.DISABLED -> "Off"
-    ListenerState.INITIALIZING -> "Starting"
-    ListenerState.LISTENING -> "Listening"
-    ListenerState.CAPTURING -> "Getting location"
-    ListenerState.SAVING -> "Saving"
-    ListenerState.RECOVERING -> "Recovering"
-    ListenerState.ERROR -> "Error"
 }

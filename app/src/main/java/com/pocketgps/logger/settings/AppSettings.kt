@@ -1,18 +1,6 @@
 package com.pocketgps.logger.settings
 
-/**
- * Confirmation cue played after a save completes.
- */
-enum class ConfirmationMode {
-    /** Speak "Location saved" / "Location unavailable" through TTS. */
-    SPEECH,
-
-    /** Short, quiet beep pattern; no TTS. */
-    TONE,
-
-    /** No audible cue at all. */
-    SILENT,
-}
+import com.pocketgps.logger.sensor.TapSensitivity
 
 /**
  * Cached-location policy for a trigger.
@@ -26,33 +14,36 @@ enum class CachedLocationPolicy {
 }
 
 /**
- * User-configurable settings. Defaults match the spec ("save spot", short GPS timeout, etc.).
+ * User-configurable settings for the tap-first v2 app.
+ *
+ * The law is efficiency: GPS work only happens around an actual save, and the sensor loop only
+ * runs while the phone is (or may be) in use. Defaults reflect that.
  */
 data class AppSettings(
-    val triggerPhrase: String = DEFAULT_TRIGGER_PHRASE,
-    val confirmationMode: ConfirmationMode = ConfirmationMode.SPEECH,
+    val tapSensitivity: TapSensitivity = TapSensitivity.NORMAL,
+    /**
+     * When true (default), the accelerometer listener, GPS pre-warm and wake lock are released
+     * after the phone has been stationary for a while, and re-armed automatically by the
+     * hardware significant-motion sensor. Idle cost drops to almost zero.
+     */
+    val onlyWhileMoving: Boolean = true,
     val gpsTimeoutSeconds: Int = 15,
     val cachedLocationPolicy: CachedLocationPolicy = CachedLocationPolicy.PREFER_RECENT,
     /** Maximum age of a cached fix that may be used without an explicit stale warning. */
     val cachedMaxAgeSeconds: Int = 10,
     /** Fixes worse than this are treated as unusable. */
     val maxAccuracyMeters: Float = 150f,
-    /** Post-trigger cooldown to swallow duplicate recognitions of one utterance. */
-    val cooldownSeconds: Int = 3,
     /**
-     * While listening, keep a low-duty-cycle fused-location subscription alive so a trigger
-     * saves in ~1 s instead of waiting for a cold GPS fix. Costs a little battery, saves a lot
-     * of waiting. The subscription uses balanced power accuracy, not continuous high accuracy.
+     * While tap logging is active, keep a low-duty-cycle fused-location subscription alive so a
+     * tap saves in ~1 s instead of waiting for a cold GPS fix. Uses balanced power accuracy,
+     * never continuous high accuracy.
      */
     val gpsPreWarm: Boolean = true,
-    /** Vibrate once on a saved spot and twice on failure. Useful when cues can't be heard. */
+    /** Vibrate once on a saved spot and twice on failure. The primary feedback channel. */
     val hapticFeedback: Boolean = true,
 ) {
     companion object {
-        const val DEFAULT_TRIGGER_PHRASE = "save spot"
         const val MIN_GPS_TIMEOUT_SECONDS = 5
         const val MAX_GPS_TIMEOUT_SECONDS = 60
-        const val MIN_COOLDOWN_SECONDS = 1
-        const val MAX_COOLDOWN_SECONDS = 15
     }
 }

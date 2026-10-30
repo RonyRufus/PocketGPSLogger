@@ -18,7 +18,6 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
-import com.pocketgps.logger.ServiceLocator
 import com.pocketgps.logger.ui.main.MainScreen
 import com.pocketgps.logger.ui.savedlocations.SavedLocationsScreen
 import com.pocketgps.logger.ui.settings.SettingsScreen
@@ -39,16 +38,12 @@ fun AppRoot() {
     val route = backStackEntry?.destination?.route
 
     val startDestination = remember {
-        val modelReady = ServiceLocator.modelManager.isReady()
-        val micGranted = ContextCompat.checkSelfPermission(
-            context, Manifest.permission.RECORD_AUDIO,
-        ) == PackageManager.PERMISSION_GRANTED
         val locationGranted = ContextCompat.checkSelfPermission(
             context, Manifest.permission.ACCESS_FINE_LOCATION,
         ) == PackageManager.PERMISSION_GRANTED || ContextCompat.checkSelfPermission(
             context, Manifest.permission.ACCESS_COARSE_LOCATION,
         ) == PackageManager.PERMISSION_GRANTED
-        if (modelReady && micGranted && locationGranted) Routes.MAIN else Routes.SETUP
+        if (locationGranted) Routes.MAIN else Routes.SETUP
     }
 
     val showBottomBar = route == Routes.MAIN ||
