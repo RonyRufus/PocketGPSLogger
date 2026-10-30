@@ -343,7 +343,7 @@ class ListenerEngine(
                 }
             }
             if (settings.hapticFeedback) haptics?.success()
-            confirmation.playSuccess()
+            confirmation.playNoteSaved()
         } else {
             failCue()
             if (active) {
