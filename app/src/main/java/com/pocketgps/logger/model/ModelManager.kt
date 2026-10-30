@@ -256,5 +256,13 @@ class ModelManager(private val context: Context) {
          */
         const val SMALL_EN_US_URL =
             "https://alphacephei.com/vosk/models/vosk-model-small-en-us-0.15.zip"
+
+        /**
+         * Larger (128 MB zip) dynamic-graph English model: lower word error rate than the small
+         * model on the vendor's benchmarks, and still supports the constrained trigger grammar.
+         * Needs more RAM; use [SMALL_EN_US_URL] on constrained devices.
+         */
+        const val LGRAPH_EN_US_URL =
+            "https://alphacephei.com/vosk/models/vosk-model-en-us-0.22-lgraph.zip"
     }
 }

@@ -101,7 +101,7 @@ class SetupViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             _modelOp.value = ModelOp.Working("Downloading model…", 0f)
             val result = modelManager.downloadAndImport(
-                url = ModelManager.SMALL_EN_US_URL,
+                url = ModelManager.LGRAPH_EN_US_URL,
                 onProgress = { downloaded, total ->
                     val progress = if (total > 0) downloaded.toFloat() / total else null
                     _modelOp.value = ModelOp.Working("Downloading model…", progress)
