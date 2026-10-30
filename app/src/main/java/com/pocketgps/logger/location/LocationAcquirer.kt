@@ -11,6 +11,7 @@ import android.os.Looper
 import androidx.core.content.ContextCompat
 import com.google.android.gms.common.ConnectionResult
 import com.google.android.gms.common.GoogleApiAvailability
+import com.google.android.gms.location.CurrentLocationRequest
 import com.google.android.gms.location.FusedLocationProviderClient
 import com.google.android.gms.location.LocationCallback
 import com.google.android.gms.location.LocationRequest
@@ -24,6 +25,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
+import java.util.concurrent.TimeUnit
 import kotlin.coroutines.resume
 
 /**
@@ -143,7 +145,6 @@ class LocationAcquirer(private val context: Context) {
      */
     @SuppressLint("MissingPermission")
     suspend fun acquire(
-        triggerTimestampMs: Long,
         settings: AppSettings,
     ): Result = withContext(Dispatchers.IO) {
         if (!hasPermission()) {
@@ -157,9 +158,11 @@ class LocationAcquirer(private val context: Context) {
 
         // 1. Prefer a recent, accurate cached fix.
         if (settings.cachedLocationPolicy == CachedLocationPolicy.PREFER_RECENT && cached != null) {
-            val age = ageSeconds(cached, triggerTimestampMs)
+            // Age the fix when deciding to use it, not when the trigger was detected.
+            // GPS acquisition can wait up to 60 seconds, so trigger-time age is misleading.
+            val age = ageSeconds(cached, System.currentTimeMillis())
             val accuracy = cached.accuracy.takeIf { hasAccuracy(it) }
-            val recentEnough = age <= settings.cachedMaxAgeSeconds
+            val recentEnough = cached.time > 0L && age <= settings.cachedMaxAgeSeconds
             val accurateEnough = accuracy == null || accuracy <= settings.maxAccuracyMeters
             if (recentEnough && accurateEnough) {
                 return@withContext Result.Success(toFix(cached, LocationSource.CACHED, age))
@@ -171,23 +174,38 @@ class LocationAcquirer(private val context: Context) {
         val fresh = withTimeoutOrNull(timeoutMs) { requestFreshFix() }
 
         if (fresh != null) {
+            val freshAge = ageSeconds(fresh, System.currentTimeMillis())
+            // getCurrentLocation may return a cached provider fix. Do not label it fresh merely
+            // because it came back from the one-shot API; require a valid, recent timestamp.
+            if (fresh.time <= 0L || freshAge > settings.cachedMaxAgeSeconds) {
+                return@withContext Result.Unavailable(
+                    "GPS provider returned a stale fix (${freshAge}s old; limit ${settings.cachedMaxAgeSeconds}s)",
+                )
+            }
             val accuracy = fresh.accuracy.takeIf { hasAccuracy(it) }
             val usable = accuracy == null || accuracy <= settings.maxAccuracyMeters
             if (usable) {
                 return@withContext Result.Success(
-                    toFix(fresh, LocationSource.FRESH, ageSeconds(fresh, triggerTimestampMs)),
+                    toFix(fresh, LocationSource.FRESH, freshAge),
                 )
             }
             // Fresh but poor accuracy. Prefer a better cached fix if one exists, else return the
             // fresh fix (the UI flags poor accuracy) unless it is clearly meaningless.
-            if (cached != null && cached.accuracy <= fresh.accuracy) {
-                return@withContext Result.Success(
-                    toFix(cached, LocationSource.FALLBACK, ageSeconds(cached, triggerTimestampMs)),
-                )
+            if (cached != null) {
+                val cachedAge = ageSeconds(cached, System.currentTimeMillis())
+                val cachedAccuracy = cached.accuracy.takeIf { hasAccuracy(it) }
+                val cachedIsUsable = cached.time > 0L && cachedAge <= settings.cachedMaxAgeSeconds
+                    (cachedAccuracy == null || cachedAccuracy <= settings.maxAccuracyMeters) &&
+                    (cachedAccuracy == null || cached.accuracy <= fresh.accuracy)
+                if (cachedIsUsable) {
+                    return@withContext Result.Success(
+                        toFix(cached, LocationSource.FALLBACK, cachedAge),
+                    )
+                }
             }
             if (accuracy == null || accuracy <= ABSURD_ACCURACY_METERS) {
                 return@withContext Result.Success(
-                    toFix(fresh, LocationSource.FRESH, ageSeconds(fresh, triggerTimestampMs)),
+                    toFix(fresh, LocationSource.FRESH, ageSeconds(fresh, System.currentTimeMillis())),
                 )
             }
             return@withContext Result.Unavailable(
@@ -195,14 +213,29 @@ class LocationAcquirer(private val context: Context) {
             )
         }
 
-        // 3. Fresh request timed out. Any known fix — even a stale one — is more useful to the
-        //    user than nothing, and the record is explicitly flagged with its age.
+        // 3. Fresh request timed out. Never label old coordinates as a successful current save:
+        // only use a fallback that remains within the configured age and accuracy limits.
         if (cached != null) {
-            val age = ageSeconds(cached, triggerTimestampMs)
-            return@withContext Result.Success(toFix(cached, LocationSource.FALLBACK, age))
+            val age = ageSeconds(cached, System.currentTimeMillis())
+            val accuracy = cached.accuracy.takeIf { hasAccuracy(it) }
+            val recentEnough = cached.time > 0L && age <= settings.cachedMaxAgeSeconds
+            val accurateEnough = accuracy == null || accuracy <= settings.maxAccuracyMeters
+            if (recentEnough && accurateEnough) {
+                return@withContext Result.Success(toFix(cached, LocationSource.FALLBACK, age))
+            }
+            val reasons = buildList {
+                if (cached.time <= 0L) add("last fix has no valid timestamp")
+                else if (!recentEnough) add("last fix is ${age}s old (limit ${settings.cachedMaxAgeSeconds}s)")
+                if (!accurateEnough && accuracy != null) {
+                    add("last fix accuracy is ${accuracy.toInt()} m (limit ${settings.maxAccuracyMeters.toInt()} m)")
+                }
+            }
+            return@withContext Result.Unavailable(
+                "Fresh GPS fix timed out; refusing stale/poor fallback: ${reasons.joinToString("; ")}",
+            )
         }
 
-        return@withContext Result.Unavailable("No location fix within timeout")
+        return@withContext Result.Unavailable("No fresh GPS fix within ${settings.gpsTimeoutSeconds}s")
     }
 
     // ------------------------------------------------------------------ backends
@@ -219,8 +252,14 @@ class LocationAcquirer(private val context: Context) {
     @SuppressLint("MissingPermission")
     private suspend fun requestFusedOnce(client: FusedLocationProviderClient): Location? {
         val cts = CancellationTokenSource()
+        // Explicitly disallow an old cached fix. A trigger should capture the location now, not
+        // silently reuse a coordinate from before the user moved.
+        val request = CurrentLocationRequest.Builder()
+            .setPriority(Priority.PRIORITY_HIGH_ACCURACY)
+            .setMaxUpdateAgeMillis(0L)
+            .build()
         val task = runCatching {
-            client.getCurrentLocation(Priority.PRIORITY_HIGH_ACCURACY, cts.token)
+            client.getCurrentLocation(request, cts.token)
         }.getOrNull() ?: return null
         return try {
             suspendCancellableCoroutine<Location?> { cont ->
@@ -296,10 +335,10 @@ class LocationAcquirer(private val context: Context) {
         val candidates = mutableListOf<Location>()
         lastWarmFix?.let { candidates += it }
         fused?.lastLocation?.let { task ->
-            // Blocking here is acceptable: we are already on Dispatchers.IO and the task is
-            // normally already complete (cached). Guard with a bounded await via runCatching.
-            runCatching { com.google.android.gms.tasks.Tasks.await(task) }.getOrNull()
-                ?.let { candidates += it }
+            // This is only a cache lookup, never let it block GPS acquisition indefinitely.
+            runCatching {
+                com.google.android.gms.tasks.Tasks.await(task, 500, TimeUnit.MILLISECONDS)
+            }.getOrNull()?.let { candidates += it }
         }
         val lm = locationManager ?: return candidates.maxByOrNull { it.time }
         listOf(

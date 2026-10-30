@@ -60,6 +60,7 @@ fun MainScreen(
     var hasLocation by remember { mutableStateOf(viewModel.hasLocationPermission()) }
     var hasNotification by remember { mutableStateOf(viewModel.hasNotificationPermission()) }
     var gpsReady by remember { mutableStateOf(viewModel.isGpsReady()) }
+    var showDiagnostics by remember { mutableStateOf(false) }
 
     val permissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions(),
@@ -256,21 +257,27 @@ fun MainScreen(
             else -> Unit
         }
 
-        SectionCard(title = "Status") {
-            LabeledValue("Listening state", stateLabel(engineState.state))
-            LabeledValue("Microphone permission", if (hasMic) "Granted" else "Missing")
-            LabeledValue(
-                "Location permission",
-                if (hasLocation) "Granted" else "Missing",
-            )
-            LabeledValue("GPS enabled", if (gpsReady) "Yes" else "No")
-            LabeledValue("Model", if (modelReady) "Installed" else "Missing")
-            LabeledValue(
-                "Earphone",
-                if (engineState.headsetConnected) "Connected" else "Not detected",
-            )
-            engineState.inputRoute?.let { LabeledValue("Mic route", it) }
-            LabeledValue("Saved records", count.toString())
+        TextButton(onClick = { showDiagnostics = !showDiagnostics }) {
+            Text(if (showDiagnostics) "Hide device diagnostics" else "Device diagnostics")
+        }
+
+        if (showDiagnostics) {
+            SectionCard(title = "Device diagnostics") {
+                LabeledValue("Listening state", stateLabel(engineState.state))
+                LabeledValue("Microphone permission", if (hasMic) "Granted" else "Missing")
+                LabeledValue(
+                    "Location permission",
+                    if (hasLocation) "Granted" else "Missing",
+                )
+                LabeledValue("GPS enabled", if (gpsReady) "Yes" else "No")
+                LabeledValue("Model", if (modelReady) "Installed" else "Missing")
+                LabeledValue(
+                    "Earphone",
+                    if (engineState.headsetConnected) "Connected" else "Not detected",
+                )
+                engineState.inputRoute?.let { LabeledValue("Mic route", it) }
+                LabeledValue("Saved records", count.toString())
+            }
         }
 
         SectionCard(title = "Last saved location") {

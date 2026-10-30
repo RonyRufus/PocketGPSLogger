@@ -32,6 +32,20 @@ class TriggerMatcherTest {
     }
 
     @Test
+    fun regexMatcherRequiresWholeWordBoundaries() {
+        assertFalse(TriggerMatcher.matches("save spots", "save spot"))
+        assertFalse(TriggerMatcher.matches("unsave spot", "save spot"))
+        assertTrue(TriggerMatcher.matches("please, save... spot!", "save spot"))
+    }
+
+    @Test
+    fun pipelineIndexUsesSameWholeWordRegexRules() {
+        assertEquals(2, TriggerMatcher.matchStartIndex(listOf("please", "now", "Save!", "Spot."), listOf("save", "spot")))
+        assertEquals(-1, TriggerMatcher.matchStartIndex(listOf("save", "spots"), listOf("save", "spot")))
+        assertEquals(-1, TriggerMatcher.matchStartIndex(listOf("save", "the", "spot"), listOf("save", "spot")))
+    }
+
+    @Test
     fun unrelatedSentenceDoesNotMatch() {
         assertFalse(TriggerMatcher.matches("start the timer", "save spot"))
         assertFalse(TriggerMatcher.matches("save the file", "save spot"))

@@ -3,12 +3,9 @@ package com.pocketgps.logger.audio
 /**
  * Validates recognised text against the configured trigger phrase.
  *
- * Rules (all pure Kotlin, unit-tested):
- *  - Case and harmless punctuation are normalised away.
- *  - The trigger must appear as a **contiguous run of whole words**. A single matching word is
- *    never enough, so "save" alone does not fire "save spot".
- *  - Empty, partial or malformed input is rejected.
- *  - A phrase shorter than two words is rejected as too weak for always-on use.
+ * Matching is deliberately conservative: the complete trigger must appear as a contiguous run
+ * of whole words. Punctuation is normalised to spaces first, then an escaped regex is used so
+ * trigger text is treated as literal words rather than executable regex syntax.
  */
 object TriggerMatcher {
 
@@ -26,29 +23,45 @@ object TriggerMatcher {
         normalize(text).split(' ').filter { it.isNotEmpty() }
 
     /**
-     * True when [recognized] contains [trigger] as a contiguous word sequence.
-     * Both arguments are raw text; normalisation happens here.
+     * True when [recognized] contains [trigger] as a contiguous sequence of whole words.
+     * Regex metacharacters in the supplied phrase are never interpreted as regex syntax.
      */
-    fun matches(recognized: String, trigger: String): Boolean =
-        matchesTokens(tokens(recognized), tokens(trigger))
-
-    fun matchesTokens(recognized: List<String>, trigger: List<String>): Boolean {
-        if (recognized.isEmpty() || trigger.isEmpty()) return false
-        if (trigger.size < 2) return false // a lone word is too risky for always-on
-        if (recognized.size < trigger.size) return false
-        val last = recognized.size - trigger.size
-        for (start in 0..last) {
-            var ok = true
-            for (k in trigger.indices) {
-                if (recognized[start + k] != trigger[k]) {
-                    ok = false
-                    break
-                }
-            }
-            if (ok) return true
+    fun matches(recognized: String, trigger: String): Boolean {
+        val triggerTokens = tokens(trigger)
+        if (triggerTokens.size < 2) return false
+        val normalizedText = normalize(recognized)
+        if (normalizedText.isEmpty()) return false
+        val phrasePattern = triggerTokens.joinToString(separator = "\\s+") {
+            Regex.escape(it)
         }
-        return false
+        return Regex("(?:^|\\s)$phrasePattern(?:\\s|$)").containsMatchIn(normalizedText)
     }
+
+    /**
+     * Returns the first event index of a contiguous trigger, using the same escaped whole-word
+     * regex policy as [matches]. Recognition events are normally one word each; normalising here
+     * also makes punctuation/case handling consistent if a backend returns decorated tokens.
+     */
+    fun matchStartIndex(recognized: List<String>, trigger: List<String>): Int {
+        if (recognized.isEmpty() || trigger.size < 2) return -1
+        val triggerWords = trigger.flatMap(::tokens)
+        if (triggerWords.size < 2) return -1
+
+        val normalizedText = normalize(recognized.joinToString(" "))
+        if (normalizedText.isEmpty()) return -1
+        val phrasePattern = triggerWords.joinToString(separator = "\\s+") {
+            Regex.escape(it)
+        }
+        val match = Regex("(?:^|\\s)($phrasePattern)(?=\\s|$)").find(normalizedText)
+            ?: return -1
+        val phraseStart = match.groups[1]?.range?.first ?: return -1
+        val wordsBefore = normalizedText.substring(0, phraseStart).trim()
+        if (wordsBefore.isEmpty()) return 0
+        return wordsBefore.split(WHITESPACE).size
+    }
+
+    fun matchesTokens(recognized: List<String>, trigger: List<String>): Boolean =
+        matchStartIndex(recognized, trigger) >= 0
 
     /** True when the text is a usable trigger definition (>= 2 words, alphanumeric). */
     fun isValidTrigger(trigger: String): Boolean {
@@ -56,10 +69,7 @@ object TriggerMatcher {
         return t.size >= 2 && t.all { it.isNotEmpty() }
     }
 
-    /**
-     * Returns the matched phrase text if [recognized] satisfies [trigger], else null.
-     * The returned string is the normalised trigger definition.
-     */
+    /** Returns the matched phrase text if [recognized] satisfies [trigger], else null. */
     fun acceptedPhrase(recognized: String, trigger: String): String? =
         if (matches(recognized, trigger)) normalize(trigger) else null
 

@@ -251,9 +251,8 @@ On a trigger, `LocationAcquirer` runs on an IO coroutine (never the audio thread
    within the accuracy threshold, use it as **cached**.
 2. Otherwise request a **fresh** fix (Fused `Priority.PRIORITY_HIGH_ACCURACY`, or platform
    `getCurrentLocation` / `requestSingleUpdate`) bounded by `gpsTimeoutSeconds`.
-3. If the fresh fix is missing or unusably inaccurate and a last-known fix exists, save it as
-   **fallback** with its age and a `Stale fix used after GPS timeout` warning.
-4. Otherwise report **Location unavailable** and play the failure cue — no record is written.
+3. If the fresh fix is missing or unusably inaccurate, use a last-known fix only if it still meets the configured age and accuracy limits; mark it as **fallback**.
+4. If the only available fix is too old or too inaccurate, report **Location unavailable** and play the failure cue — no misleading coordinate is saved as a successful current location. Fix age is evaluated when the fix is selected, not when the trigger was first detected.
 
 Stored per record: id, latitude, longitude, trigger time, fix time, accuracy (nullable), source
 (`fresh`/`cached`/`fallback`), fix age (nullable), recognised phrase, save status, optional notes

@@ -185,7 +185,7 @@ class ListenerEngine(
 
         scope.launch {
             try {
-                val result = locationAcquirer.acquire(triggerTimestampMs, settings)
+                val result = locationAcquirer.acquire(settings)
                 when (result) {
                     is LocationAcquirer.Result.Success -> persist(triggerTimestampMs, phrase, result.fix)
                     is LocationAcquirer.Result.Unavailable -> {
@@ -283,7 +283,7 @@ class ListenerEngine(
         val parts = mutableListOf<String>()
         if (fix.source == com.pocketgps.logger.location.LocationSource.FALLBACK) {
             val age = fix.ageSeconds ?: 0
-            parts += "Stale fix used after GPS timeout (age ${age}s)"
+            parts += "Fallback fix used after GPS timeout (age ${age}s)"
         }
         val accuracy = fix.accuracyMeters
         if (accuracy != null && accuracy > settings.maxAccuracyMeters) {
