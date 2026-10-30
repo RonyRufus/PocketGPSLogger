@@ -267,7 +267,7 @@ class RecognitionPipeline(
         val nowNs = clock()
         cooldownUntilNs = nowNs + cooldownSeconds * 1_000_000_000L
         recentWords.clear()
-        onTrigger?.invoke(nowNs, TriggerMatcher.normalize(capture.phrase), capture.confidence, note, transcript)
+        onTrigger?.invoke(capture.startedNs, TriggerMatcher.normalize(capture.phrase), capture.confidence, note, transcript)
     }
 
     /** Request a live trigger-phrase change; applied safely on the audio thread. */
