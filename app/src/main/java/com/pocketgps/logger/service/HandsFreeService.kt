@@ -128,6 +128,8 @@ class HandsFreeService : android.app.Service() {
 
     @Volatile private var currentSettings = AppSettings()
     @Volatile private var listeningActive = false
+    @Volatile private var pocketTapActive = false
+    @Volatile private var pocketTapScreenOffCapable = false
 
     private val audioManager: AudioManager? by lazy { getSystemService(AudioManager::class.java) }
     private val powerManager: PowerManager by lazy { getSystemService(PowerManager::class.java) }
@@ -424,6 +426,8 @@ class HandsFreeService : android.app.Service() {
         if (!enabled) {
             pocketTapDetector?.stop()
             pocketTapDetector = null
+            pocketTapActive = false
+            pocketTapScreenOffCapable = false
             return
         }
         if (pocketTapDetector != null) return
@@ -436,12 +440,17 @@ class HandsFreeService : android.app.Service() {
         if (!detector.start()) {
             Log.w(TAG, "No supported motion sensor; pocket tap trigger unavailable")
             detector.stop()
+            pocketTapActive = false
+            pocketTapScreenOffCapable = false
             return
         }
-        if (!detector.hasWakeUpSensor) {
+        pocketTapDetector = detector
+        pocketTapActive = true
+        pocketTapScreenOffCapable = detector.hasWakeUpSensor
+        if (!pocketTapScreenOffCapable) {
             Log.w(TAG, "Only a non-wakeup motion sensor is available; screen-off tap delivery is not guaranteed")
         }
-        pocketTapDetector = detector
+        updateNotification()
     }
 
     private fun onSettingsChanged(settings: AppSettings) {
@@ -597,9 +606,17 @@ class HandsFreeService : android.app.Service() {
 
             ListenerState.LISTENING -> {
                 title = "Listening for \"${ui.triggerPhrase}\""
-                text = ui.lastSaved?.let {
-                    "Last saved: ${formatClock(it.triggerTimestamp)}"
-                } ?: "Say the phrase to save this spot"
+                text = when {
+                    pocketTapActive && pocketTapScreenOffCapable ->
+                        "Voice + pocket tap active"
+                    pocketTapActive ->
+                        "Voice active; screen-off tap is device-limited"
+                    currentSettings.pocketTapEnabled ->
+                        "Voice active; pocket tap sensor unavailable"
+                    else -> ui.lastSaved?.let {
+                        "Last saved: ${formatClock(it.triggerTimestamp)}"
+                    } ?: "Say the phrase to save this spot"
+                }
             }
 
             ListenerState.CAPTURING -> {
