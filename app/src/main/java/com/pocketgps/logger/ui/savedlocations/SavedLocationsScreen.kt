@@ -183,7 +183,7 @@ fun SavedLocationsScreen(viewModel: SavedLocationsViewModel = viewModel()) {
                 fontWeight = FontWeight.SemiBold,
             )
             Row {
-                if (records.isNotEmpty()) {
+                if (stats.total > 0) {
                     IconButton(onClick = { showExportDialog = true }) {
                         Icon(AppIcons.FileDownload, contentDescription = "Export to GPX or CSV")
                     }
