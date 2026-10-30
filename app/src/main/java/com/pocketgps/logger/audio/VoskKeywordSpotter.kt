@@ -1,5 +1,6 @@
 package com.pocketgps.logger.audio
 
+import android.util.Log
 import org.vosk.Model
 import org.vosk.Recognizer
 
@@ -16,14 +17,22 @@ class VoskKeywordSpotter(
     initialPhrases: List<String>,
 ) : KeywordSpotter {
 
+    companion object {
+        private const val TAG = "VoskKeywordSpotter"
+    }
+
     private var recognizer: Recognizer = newRecognizer(initialPhrases)
     private var streamBaseSamples: Long = 0L
     private var totalSamplesFed: Long = 0L
 
     private fun newRecognizer(phrases: List<String>): Recognizer =
-        Recognizer(model, sampleRate.toFloat(), GrammarJson.build(phrases)).apply {
-            // Enable word-level metadata so final results carry conf + lattice timing.
-            setWords(true)
+        try {
+            Recognizer(model, sampleRate.toFloat(), GrammarJson.build(phrases)).apply {
+                setWords(true)
+            }
+        } catch (t: Throwable) {
+            Log.e(TAG, "Failed to create Vosk Recognizer for phrases=$phrases", t)
+            throw t
         }
 
     /**
@@ -66,12 +75,14 @@ class VoskKeywordSpotter(
         val old = recognizer
         streamBaseSamples = totalSamplesFed
         recognizer = newRecognizer(phrases)
-        runCatching { old.close() }
+        runCatching { old.close() }.onFailure { Log.w(TAG, "Failed to close old recognizer", it) }
+        Log.d(TAG, "Grammar updated to $phrases")
     }
 
     @Synchronized
     override fun close() {
-        runCatching { recognizer.close() }
+        runCatching { recognizer.close() }.onFailure { Log.w(TAG, "Failed to close recognizer", it) }
+        Log.d(TAG, "Recognizer closed")
     }
 }
 
