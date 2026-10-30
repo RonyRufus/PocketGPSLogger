@@ -327,12 +327,15 @@ class HandsFreeService : android.app.Service() {
                     pipeline.updateDictation(currentSettings.voiceNotes)
                     spotter.setDictation(currentSettings.voiceNotes)
                     pipeline.isSuppressed = { confirmation.isPlaying() }
-                    pipeline.onTrigger = { _, phrase, _, observation, transcript ->
-                        // Hand off immediately; GPS work runs in the engine's own coroutine so the
-                        // audio loop is never blocked. The raw transcript is retained with the note.
+                    pipeline.onTrigger = { triggerNanos, phrase, _, observation, transcript ->
+                        // Convert the monotonic trigger time to wall time, so GPS latency and
+                        // dictated-note duration do not shift the saved timestamp.
+                        val elapsedMs = ((SystemClock.elapsedRealtimeNanos() - triggerNanos)
+                            .coerceAtLeast(0L)) / 1_000_000L
+                        val triggerTimestampMs = System.currentTimeMillis() - elapsedMs
                         Log.d(TAG, "Trigger recognized; handing off to engine")
                         engine.onTriggerDetected(
-                            System.currentTimeMillis(), phrase, observation, transcript,
+                            triggerTimestampMs, phrase, observation, transcript,
                         )
                         updateNotification()
                     }
