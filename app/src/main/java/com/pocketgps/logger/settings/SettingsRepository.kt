@@ -88,6 +88,9 @@ class SettingsRepository(private val context: Context) {
         return defaults.triggerPhrases
     }
 
+    /** Backwards-compatible setter; accepts one phrase. */
+    suspend fun setTriggerPhrase(phrase: String) = setTriggerPhrases(listOf(phrase))
+
     suspend fun setTriggerPhrases(phrases: List<String>) = context.dataStore.edit {
         val valid = phrases.map { p -> p.trim().lowercase() }
             .filter { p -> TriggerMatcher.isValidTrigger(p) }
