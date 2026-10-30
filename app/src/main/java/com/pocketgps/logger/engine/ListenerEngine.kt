@@ -185,7 +185,7 @@ class ListenerEngine(
 
         scope.launch {
             try {
-                val result = locationAcquirer.acquire(triggerTimestampMs, settings)
+                val result = locationAcquirer.acquire(settings)
                 when (result) {
                     is LocationAcquirer.Result.Success -> persist(triggerTimestampMs, phrase, result.fix)
                     is LocationAcquirer.Result.Unavailable -> {
