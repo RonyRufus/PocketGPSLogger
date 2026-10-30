@@ -104,6 +104,17 @@ class SavedLocationsViewModel(application: Application) : AndroidViewModel(appli
                     _exportOp.value = ExportOp.Failed("Nothing to export yet")
                     return@launch
                 }
+                val waypointCount = if (gpx) {
+                    records.count { it.latitude != null && it.longitude != null }
+                } else {
+                    records.size
+                }
+                if (gpx && waypointCount == 0) {
+                    _exportOp.value = ExportOp.Failed(
+                        "No records have GPS coordinates. Export CSV to include unlocated observations.",
+                    )
+                    return@launch
+                }
                 val content = withContext(Dispatchers.Default) {
                     if (gpx) GpxExporter.export(records) else CsvExporter.export(records)
                 }
@@ -112,7 +123,13 @@ class SavedLocationsViewModel(application: Application) : AndroidViewModel(appli
                         out.write(content.toByteArray(Charsets.UTF_8))
                     } ?: throw IOException("Could not open the selected file for writing")
                 }
-                _exportOp.value = ExportOp.Done("Exported ${records.size} spot(s)")
+                _exportOp.value = ExportOp.Done(
+                    if (gpx && waypointCount < records.size) {
+                        "Exported $waypointCount waypoint(s); ${records.size - waypointCount} unlocated note(s) omitted from GPX. Use CSV to include all records."
+                    } else {
+                        "Exported $waypointCount record(s)"
+                    },
+                )
             } catch (t: Throwable) {
                 _exportOp.value = ExportOp.Failed(t.message ?: "Export failed")
             }
