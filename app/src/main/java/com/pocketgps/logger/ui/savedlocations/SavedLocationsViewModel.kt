@@ -6,10 +6,15 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.pocketgps.logger.ServiceLocator
 import com.pocketgps.logger.data.LocationRecord
+import com.pocketgps.logger.data.SearchPatterns
 import com.pocketgps.logger.export.CsvExporter
 import com.pocketgps.logger.export.GpxExporter
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.stateIn
@@ -23,8 +28,21 @@ class SavedLocationsViewModel(application: Application) : AndroidViewModel(appli
 
     private val repository = ServiceLocator.locationRepository
 
-    val records: StateFlow<List<LocationRecord>> = repository.observeAll()
+    private val _searchQuery = MutableStateFlow("")
+    val searchQuery = _searchQuery.asStateFlow()
+
+    val records: StateFlow<List<LocationRecord>> = searchQuery
+        .map { it.trim() }
+        .distinctUntilChanged()
+        .flatMapLatest { query ->
+            if (query.isBlank()) repository.observeAll()
+            else repository.search(SearchPatterns.forQuery(query), newestFirst = true, category = null)
+        }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+
+    fun setSearchQuery(value: String) {
+        _searchQuery.value = value
+    }
 
     private val _stats = MutableStateFlow(Stats())
     val stats: StateFlow<Stats> = _stats
@@ -49,7 +67,7 @@ class SavedLocationsViewModel(application: Application) : AndroidViewModel(appli
     }
 
     suspend fun refreshStats() {
-        val total = records.value.size
+        val total = repository.count()
         val zone = java.util.TimeZone.getDefault()
         val now = Calendar.getInstance(zone)
         val todayStart = now.apply {
