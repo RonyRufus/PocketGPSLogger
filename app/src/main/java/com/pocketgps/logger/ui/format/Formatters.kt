@@ -24,8 +24,9 @@ object Formatters {
     fun time(ms: Long): String = timeOnly.format(Date(ms))
 
     /** Six decimal places ≈ 0.1 m, plenty for a saved spot. */
-    fun coordinates(lat: Double, lon: Double): String =
-        String.format(Locale.US, "%.6f, %.6f", lat, lon)
+    fun coordinates(lat: Double?, lon: Double?): String =
+        if (lat == null || lon == null) "No GPS location"
+        else String.format(Locale.US, "%.6f, %.6f", lat, lon)
 
     fun accuracy(meters: Float?): String =
         meters?.let { "±${it.toInt()} m" } ?: "accuracy unknown"
@@ -38,7 +39,8 @@ object Formatters {
     }
 
     /** Build and launch a geo: intent, falling back to a web map if no handler exists. */
-    fun openInMap(context: Context, lat: Double, lon: Double, label: String) {
+    fun openInMap(context: Context, lat: Double?, lon: Double?, label: String) {
+        if (lat == null || lon == null) return
         val geoUri = Uri.Builder()
             .scheme("geo")
             .opaquePart("$lat,$lon?q=$lat,$lon(${Uri.encode(label)})")
@@ -54,7 +56,8 @@ object Formatters {
     }
 
     /** Copy "lat, lon" to the clipboard; returns true when the write succeeded. */
-    fun copyCoordinates(context: Context, lat: Double, lon: Double): Boolean {
+    fun copyCoordinates(context: Context, lat: Double?, lon: Double?): Boolean {
+        if (lat == null || lon == null) return false
         val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
             ?: return false
         return runCatching {
@@ -69,9 +72,10 @@ object Formatters {
     }
 
     /** Open the system share sheet with a readable description of one saved spot. */
-    fun shareSpot(context: Context, lat: Double, lon: Double, timestamp: Long) {
+    fun shareSpot(context: Context, lat: Double?, lon: Double?, timestamp: Long) {
         val text = buildString {
-            append("Saved spot: ").append(coordinates(lat, lon))
+            if (lat == null || lon == null) append("Observation saved without a GPS fix")
+            else append("Saved spot: ").append(coordinates(lat, lon))
             append(" (").append(timestamp(timestamp)).append(")")
         }
         val send = Intent(Intent.ACTION_SEND).apply {
