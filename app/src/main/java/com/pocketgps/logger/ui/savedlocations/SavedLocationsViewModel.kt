@@ -66,6 +66,12 @@ class SavedLocationsViewModel(application: Application) : AndroidViewModel(appli
         viewModelScope.launch { repository.delete(id) }
     }
 
+    fun updateRecord(record: LocationRecord) {
+        viewModelScope.launch(Dispatchers.IO) {
+            repository.update(record.copy(modifiedTimestamp = System.currentTimeMillis()))
+        }
+    }
+
     fun clearAll() {
         viewModelScope.launch { repository.clearAll() }
     }
