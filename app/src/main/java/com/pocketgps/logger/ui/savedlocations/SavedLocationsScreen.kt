@@ -46,6 +46,7 @@ fun SavedLocationsScreen(viewModel: SavedLocationsViewModel = viewModel()) {
     val records by viewModel.records.collectAsStateWithLifecycle()
     val stats by viewModel.stats.collectAsStateWithLifecycle()
     val exportOp by viewModel.exportOp.collectAsStateWithLifecycle()
+    val searchQuery by viewModel.searchQuery.collectAsStateWithLifecycle()
     val context = LocalContext.current
     var confirmClear by remember { mutableStateOf(false) }
     var showExportDialog by remember { mutableStateOf(false) }
@@ -191,6 +192,14 @@ fun SavedLocationsScreen(viewModel: SavedLocationsViewModel = viewModel()) {
             }
         }
 
+        OutlinedTextField(
+            value = searchQuery,
+            onValueChange = viewModel::setSearchQuery,
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
+            label = { Text("Search observations, categories, or trigger phrases") },
+            singleLine = true,
+        )
+
         if (records.isEmpty()) {
             Column(
                 modifier = Modifier
@@ -207,11 +216,12 @@ fun SavedLocationsScreen(viewModel: SavedLocationsViewModel = viewModel()) {
                 )
                 Spacer(Modifier.size(12.dp))
                 Text(
-                    "No locations saved yet",
+                    if (searchQuery.isBlank()) "No locations saved yet" else "No matching records",
                     style = MaterialTheme.typography.titleMedium,
                 )
                 Text(
-                    "Start hands-free mode and say your trigger phrase.",
+                    if (searchQuery.isBlank()) "Start hands-free mode and say your trigger phrase."
+                    else "Try a different search term.",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
