@@ -37,6 +37,7 @@ class RecognitionPipelineTest {
         override fun partialResult(): String? = null
         override fun streamSeconds(): Float = call * 0.128f
         override fun updateGrammar(phrases: List<String>) = Unit
+        override fun setDictation(enabled: Boolean) = Unit
         override fun close() = Unit
     }
 
@@ -57,12 +58,39 @@ class RecognitionPipelineTest {
         val pl = RecognitionPipeline(
             audio = FakeAudioSource(chunks),
             spotter = ScriptedSpotter(script),
-            initialTriggerPhrase = "save spot",
+            initialTriggers = listOf("save spot"),
             clock = clock,
             cooldownSeconds = 3,
         )
-        pl.onTrigger = { ns, _, _ -> triggers.add(ns) }
+        pl.onTrigger = { ns, _, _, _, _ -> triggers.add(ns) }
         return pl to triggers
+    }
+
+    @Test
+    fun dictationCapturesWordsAfterTriggerAndPreservesTranscript() {
+        var now = 1_000_000_000L
+        val chunks = listOf(ShortArray(2048) { 3000 })
+        val spotter = ScriptedSpotter(
+            listOf(listOf(word("save"), word("spot"), word("new"), word("apartment"))),
+        )
+        val pl = RecognitionPipeline(
+            audio = FakeAudioSource(chunks),
+            spotter = spotter,
+            initialTriggers = listOf("save spot"),
+            clock = { now },
+        )
+        var capturedNote: String? = null
+        var capturedTranscript: String? = null
+        pl.updateDictation(true)
+        pl.onTrigger = { _, _, _, note, transcript ->
+            capturedNote = note
+            capturedTranscript = transcript
+        }
+        pl.processOneChunk()
+        // End of source flushes the pending note capture.
+        pl.processOneChunk()
+        assertEquals("new apartment", capturedNote)
+        assertEquals("save spot new apartment", capturedTranscript)
     }
 
     @Test

@@ -20,6 +20,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -45,9 +46,13 @@ fun SavedLocationsScreen(viewModel: SavedLocationsViewModel = viewModel()) {
     val records by viewModel.records.collectAsStateWithLifecycle()
     val stats by viewModel.stats.collectAsStateWithLifecycle()
     val exportOp by viewModel.exportOp.collectAsStateWithLifecycle()
+    val searchQuery by viewModel.searchQuery.collectAsStateWithLifecycle()
     val context = LocalContext.current
     var confirmClear by remember { mutableStateOf(false) }
     var showExportDialog by remember { mutableStateOf(false) }
+    var editingRecord by remember { mutableStateOf<LocationRecord?>(null) }
+    var editObservation by remember { mutableStateOf("") }
+    var editCategory by remember { mutableStateOf("") }
 
     // SAF create-document launchers keep the app free of storage permissions entirely.
     val gpxLauncher = rememberLauncherForActivityResult(
@@ -56,6 +61,48 @@ fun SavedLocationsScreen(viewModel: SavedLocationsViewModel = viewModel()) {
     val csvLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.CreateDocument("text/csv"),
     ) { uri -> uri?.let { viewModel.export(it, gpx = false) } }
+
+    if (editingRecord != null) {
+        AlertDialog(
+            onDismissRequest = { editingRecord = null },
+            title = { Text("Edit observation") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedTextField(
+                        value = editObservation,
+                        onValueChange = { editObservation = it },
+                        label = { Text("Observation") },
+                        modifier = Modifier.fillMaxWidth(),
+                        minLines = 2,
+                        maxLines = 5,
+                    )
+                    OutlinedTextField(
+                        value = editCategory,
+                        onValueChange = { editCategory = it },
+                        label = { Text("Category (optional)") },
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true,
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    editingRecord?.let { record ->
+                        viewModel.updateRecord(
+                            record.copy(
+                                observation = editObservation.trim().ifEmpty { null },
+                                category = editCategory.trim().ifEmpty { null },
+                            ),
+                        )
+                    }
+                    editingRecord = null
+                }) { Text("Save") }
+            },
+            dismissButton = {
+                TextButton(onClick = { editingRecord = null }) { Text("Cancel") }
+            },
+        )
+    }
 
     if (confirmClear) {
         AlertDialog(
@@ -136,7 +183,7 @@ fun SavedLocationsScreen(viewModel: SavedLocationsViewModel = viewModel()) {
                 fontWeight = FontWeight.SemiBold,
             )
             Row {
-                if (records.isNotEmpty()) {
+                if (stats.total > 0) {
                     IconButton(onClick = { showExportDialog = true }) {
                         Icon(AppIcons.FileDownload, contentDescription = "Export to GPX or CSV")
                     }
@@ -144,6 +191,14 @@ fun SavedLocationsScreen(viewModel: SavedLocationsViewModel = viewModel()) {
                 }
             }
         }
+
+        OutlinedTextField(
+            value = searchQuery,
+            onValueChange = viewModel::setSearchQuery,
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
+            label = { Text("Search observations, categories, or trigger phrases") },
+            singleLine = true,
+        )
 
         if (records.isEmpty()) {
             Column(
@@ -161,11 +216,12 @@ fun SavedLocationsScreen(viewModel: SavedLocationsViewModel = viewModel()) {
                 )
                 Spacer(Modifier.size(12.dp))
                 Text(
-                    "No locations saved yet",
+                    if (searchQuery.isBlank()) "No locations saved yet" else "No matching records",
                     style = MaterialTheme.typography.titleMedium,
                 )
                 Text(
-                    "Start hands-free mode and say your trigger phrase.",
+                    if (searchQuery.isBlank()) "Start hands-free mode and say your trigger phrase."
+                    else "Try a different search term.",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -205,6 +261,11 @@ fun SavedLocationsScreen(viewModel: SavedLocationsViewModel = viewModel()) {
                             )
                         },
                         onDelete = { viewModel.delete(record.id) },
+                        onEdit = {
+                            editingRecord = record
+                            editObservation = record.observation.orEmpty()
+                            editCategory = record.category.orEmpty()
+                        },
                     )
                 }
             }
@@ -219,6 +280,7 @@ private fun RecordCard(
     onCopy: () -> Unit,
     onShare: () -> Unit,
     onDelete: () -> Unit,
+    onEdit: () -> Unit,
 ) {
     Card(
         modifier = Modifier
@@ -257,6 +319,14 @@ private fun RecordCard(
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+            record.observation?.takeIf { it.isNotBlank() }?.let {
+                Spacer(Modifier.size(6.dp))
+                Text(it, style = MaterialTheme.typography.bodyMedium)
+            }
+            record.category?.takeIf { it.isNotBlank() }?.let {
+                Text("Category: $it", style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.primary)
+            }
             record.notes?.let {
                 Spacer(Modifier.size(4.dp))
                 Text(
@@ -269,6 +339,7 @@ private fun RecordCard(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.End,
             ) {
+                TextButton(onClick = onEdit) { Text("Edit note") }
                 IconButton(onClick = onCopy) {
                     Icon(AppIcons.ContentCopy, contentDescription = "Copy coordinates")
                 }

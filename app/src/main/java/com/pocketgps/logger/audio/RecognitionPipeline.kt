@@ -183,7 +183,7 @@ class RecognitionPipeline(
                 fireNoteCaptureIfAny()
                 return
             }
-            val words = capture.allWords.map { it.event.word }
+            val words = capture.allWords.map { it.word }
             // Only the note region can contain a *second* trigger; the prefix before the first
             // trigger is frozen history and may legitimately contain another phrase.
             val second = TriggerMatcher.findFirstMatch(
@@ -256,7 +256,7 @@ class RecognitionPipeline(
     private fun fireNoteCaptureIfAny() {
         val capture = noteCapture ?: return
         noteCapture = null
-        val all = capture.allWords.map { it.event.word }
+        val all = capture.allWords.map { it.word }
         val transcript = all.joinToString(" ").trim().ifEmpty { null }
         val noteWords = if (capture.noteWordStart >= all.size) {
             emptyList()
@@ -267,7 +267,7 @@ class RecognitionPipeline(
         val nowNs = clock()
         cooldownUntilNs = nowNs + cooldownSeconds * 1_000_000_000L
         recentWords.clear()
-        onTrigger?.invoke(nowNs, TriggerMatcher.normalize(capture.phrase), capture.confidence, note, transcript)
+        onTrigger?.invoke(capture.startedNs, TriggerMatcher.normalize(capture.phrase), capture.confidence, note, transcript)
     }
 
     /** Request a live trigger-phrase change; applied safely on the audio thread. */

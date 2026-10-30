@@ -15,18 +15,22 @@ The app is written in Kotlin with Jetpack Compose, uses **Vosk** for offline spe
 
 * Guided **Setup**: permissions, offline model install, trigger-phrase test.
 * **Start / Stop Hands-Free Mode** from the app, plus a notification action to stop.
-* Continuous **offline** trigger-phrase recognition with a constrained grammar.
-* On a valid trigger: capture the current location, **persist it to Room**, then play a short
-  audible confirmation. Audio is never the only evidence of a save.
-* **Saved Locations** list with timestamp, coordinates, accuracy and source; tap to open in a
-  map app; delete one or clear all (with confirmation).
-* **Settings**: trigger phrase, confirmation mode (spoken / tone / silent), GPS timeout,
-  cached-location policy and age, accuracy threshold, duplicate cooldown, model status and
-  storage usage.
-* Everything is local. No accounts, cloud, analytics or recordings.
+* Continuous **offline** trigger recognition; configure multiple phrases, each requiring at least
+  two whole words.
+* Optional **spoken observations**: say “save spot, new apartment near the junction”. The words
+  after the trigger become the observation; the full recognised transcript is also retained.
+* GPS capture and database writes run off the audio thread. If GPS is unavailable, a non-empty
+  observation can still be saved as an explicitly unlocated note — never as a fake location.
+* **Saved records** show timestamps, coordinates when available, accuracy, source, observation
+  text and category. Search records, edit observations/categories, delete records, or export CSV
+  and GPX.
+* **Settings**: trigger phrases, voice-note mode, confirmation mode (spoken / tone / silent), GPS
+  timeout, cached-location policy and age, accuracy threshold, duplicate cooldown, model status
+  and storage usage.
+* Everything is local. No accounts, cloud, analytics or audio recordings. Recognised transcripts
+  and observations are stored locally with saved records.
 
-Out of scope for v1 (deliberately): voice notes, dictation, AI summaries, reminders, cloud sync,
-dashboards, speaker identification.
+Still out of scope: AI summaries, reminders, cloud sync, dashboards and speaker identification.
 
 ---
 

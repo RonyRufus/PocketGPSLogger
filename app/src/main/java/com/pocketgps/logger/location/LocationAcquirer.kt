@@ -315,13 +315,13 @@ class LocationAcquirer(private val context: Context) {
 
     // ------------------------------------------------------------------ helpers
 
-    private fun toCandidate(location: Location): LocationPolicy.FixCandidate =
+    private fun Location.toCandidate(): LocationPolicy.FixCandidate =
         LocationPolicy.FixCandidate(
-            latitude = location.latitude,
-            longitude = location.longitude,
-            accuracyMeters = location.accuracy.takeIf { hasAccuracy(it) },
-            rawAccuracyMeters = location.accuracy,
-            timestampMs = location.time,
+            latitude = latitude,
+            longitude = longitude,
+            accuracyMeters = accuracy.takeIf { hasAccuracy(it) },
+            rawAccuracyMeters = accuracy,
+            timestampMs = time,
         )
 
     private fun LocationPolicy.AcceptedFix.toFix(): Fix = Fix(

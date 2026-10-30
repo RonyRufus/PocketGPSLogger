@@ -24,6 +24,10 @@ class ExportFormatTest {
         triggerPhrase = phrase,
         saveStatus = "success",
         notes = notes,
+        observation = "new apartment near junction",
+        transcript = "save spot new apartment near junction",
+        category = "Building",
+        modifiedTimestamp = 1_721_234_568_000L,
     )
 
     // ------------------------------------------------------------------ GPX
@@ -92,9 +96,39 @@ class ExportFormatTest {
         assertEquals(
             "\"id\",\"latitude\",\"longitude\",\"trigger_time\",\"location_time\"," +
                 "\"accuracy_meters\",\"source\",\"fix_age_seconds\",\"trigger_phrase\"," +
-                "\"save_status\",\"notes\"",
+                "\"save_status\",\"notes\",\"observation\",\"transcript\",\"category\",\"modified_timestamp\"",
             header,
         )
+    }
+
+    @Test
+    fun csvExportsObservationTranscriptCategoryAndNullableCoordinates() {
+        val unlocated = record().copy(
+            latitude = null,
+            longitude = null,
+            locationTimestamp = null,
+            locationSource = "none",
+        )
+        val csv = CsvExporter.export(listOf(unlocated))
+        assertTrue(csv.contains("new apartment near junction"))
+        assertTrue(csv.contains("save spot new apartment near junction"))
+        assertTrue(csv.contains("\"Building\""))
+        assertTrue(csv.contains("\"none\""))
+        assertTrue(csv.contains("\"\",\"\""))
+    }
+
+    @Test
+    fun gpxSkipsRecordsWithoutCoordinates() {
+        val unlocated = record().copy(latitude = null, longitude = null, locationTimestamp = null)
+        val xml = GpxExporter.export(listOf(record(), unlocated))
+        assertEquals(1, Regex("<wpt ").let { r -> r.findAll(xml).count() })
+    }
+
+    @Test
+    fun gpxIncludesObservationInDescription() {
+        val xml = GpxExporter.export(listOf(record()))
+        assertTrue(xml.contains("Observation: new apartment near junction"))
+        assertTrue(xml.contains("Category: Building"))
     }
 
     @Test

@@ -280,7 +280,7 @@ fun MainScreen(
             }
         }
 
-        SectionCard(title = "Last saved location") {
+        SectionCard(title = "Last saved record") {
             val record = latest
             if (record == null) {
                 Text(
@@ -307,6 +307,10 @@ fun MainScreen(
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
+                }
+                record.observation?.takeIf { it.isNotBlank() }?.let {
+                    Spacer(Modifier.height(4.dp))
+                    Text(it, style = MaterialTheme.typography.bodyMedium)
                 }
                 Spacer(Modifier.height(6.dp))
                 LabeledValue("Accuracy", Formatters.accuracy(record.accuracyMeters))

@@ -138,7 +138,8 @@ class HandsFreeService : android.app.Service() {
     private var lastHeadsetConnected: Boolean? = null
 
     /** Trigger phrase currently compiled into the recognizer grammar. */
-    @Volatile private var appliedTriggerPhrase: String? = null
+    @Volatile private var appliedTriggerPhrases: List<String>? = null
+    @Volatile private var previousVoiceNotes: Boolean? = null
 
     // ------------------------------------------------------------------ lifecycle
 
@@ -311,24 +312,31 @@ class HandsFreeService : android.app.Service() {
                 val spotter = VoskKeywordSpotter(
                     model = model,
                     sampleRate = MicAudioSource.SAMPLE_RATE,
-                    initialPhrases = listOf(currentSettings.triggerPhrase),
+                    initialPhrases = currentSettings.triggerPhrases,
                 )
                 this.spotter = spotter
-                Log.d(TAG, "Vosk recognizer created for trigger: ${currentSettings.triggerPhrase}")
+                Log.d(TAG, "Vosk recognizer created for triggers: ${currentSettings.triggerPhrases}")
 
                 val pl = RecognitionPipeline(
                     audio = mic,
                     spotter = spotter,
-                    initialTriggerPhrase = currentSettings.triggerPhrase,
+                    initialTriggers = currentSettings.triggerPhrases,
                     clock = { SystemClock.elapsedRealtimeNanos() },
                     cooldownSeconds = currentSettings.cooldownSeconds,
                 ).also { pipeline ->
+                    pipeline.updateDictation(currentSettings.voiceNotes)
+                    spotter.setDictation(currentSettings.voiceNotes)
                     pipeline.isSuppressed = { confirmation.isPlaying() }
-                    pipeline.onTrigger = { _, _, _ ->
-                        // Hand off immediately; GPS work runs in the engine's own coroutine so the
-                        // audio loop is never blocked.
+                    pipeline.onTrigger = { triggerNanos, phrase, _, observation, transcript ->
+                        // Convert the monotonic trigger time to wall time, so GPS latency and
+                        // dictated-note duration do not shift the saved timestamp.
+                        val elapsedMs = ((SystemClock.elapsedRealtimeNanos() - triggerNanos)
+                            .coerceAtLeast(0L)) / 1_000_000L
+                        val triggerTimestampMs = System.currentTimeMillis() - elapsedMs
                         Log.d(TAG, "Trigger recognized; handing off to engine")
-                        engine.onTriggerDetected(System.currentTimeMillis())
+                        engine.onTriggerDetected(
+                            triggerTimestampMs, phrase, observation, transcript,
+                        )
                         updateNotification()
                     }
                     pipeline.onMuteDetected = { engine.onAudioInterrupted("microphone muted") }
@@ -336,7 +344,7 @@ class HandsFreeService : android.app.Service() {
                     pipeline.onSourceError = { msg -> engine.onAudioInterrupted("audio read error: $msg") }
                 }
                 this.pipeline = pl
-                appliedTriggerPhrase = currentSettings.triggerPhrase
+                appliedTriggerPhrases = currentSettings.triggerPhrases
 
                 engine.updateReadiness(
                     gpsReady = locationAcquirer.hasPermission() && locationAcquirer.isAnyProviderEnabled(),
@@ -421,11 +429,16 @@ class HandsFreeService : android.app.Service() {
         }
         // Rebuild the grammar only when the phrase actually changed: rebuilding tears down and
         // recreates the native recognizer, which is expensive and loses in-flight audio.
-        if (settings.triggerPhrase != appliedTriggerPhrase) {
-            appliedTriggerPhrase = settings.triggerPhrase
-            pipeline?.updateTrigger(settings.triggerPhrase)
-            runCatching { spotter?.updateGrammar(listOf(settings.triggerPhrase)) }
+        if (settings.triggerPhrases != appliedTriggerPhrases) {
+            appliedTriggerPhrases = settings.triggerPhrases
+            pipeline?.updateTriggers(settings.triggerPhrases)
+            runCatching { spotter?.updateGrammar(settings.triggerPhrases) }
         }
+        if (settings.voiceNotes != previousVoiceNotes) {
+            pipeline?.updateDictation(settings.voiceNotes)
+            runCatching { spotter?.setDictation(settings.voiceNotes) }
+        }
+        previousVoiceNotes = settings.voiceNotes
         pipeline?.cooldownSeconds = settings.cooldownSeconds
     }
 

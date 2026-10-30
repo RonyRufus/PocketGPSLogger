@@ -74,7 +74,8 @@ interface LocationDao {
         "SELECT * FROM location_records " +
             "WHERE (observation LIKE :pattern ESCAPE '\\' " +
             "OR category LIKE :pattern ESCAPE '\\' " +
-            "OR trigger_phrase LIKE :pattern ESCAPE '\\') " +
+            "OR trigger_phrase LIKE :pattern ESCAPE '\\' " +
+            "OR transcript LIKE :pattern ESCAPE '\\') " +
             "AND (:category IS NULL OR category = :category) " +
             "ORDER BY trigger_timestamp DESC",
     )
@@ -85,7 +86,8 @@ interface LocationDao {
         "SELECT * FROM location_records " +
             "WHERE (observation LIKE :pattern ESCAPE '\\' " +
             "OR category LIKE :pattern ESCAPE '\\' " +
-            "OR trigger_phrase LIKE :pattern ESCAPE '\\') " +
+            "OR trigger_phrase LIKE :pattern ESCAPE '\\' " +
+            "OR transcript LIKE :pattern ESCAPE '\\') " +
             "AND (:category IS NULL OR category = :category) " +
             "ORDER BY trigger_timestamp ASC",
     )

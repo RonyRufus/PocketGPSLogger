@@ -25,15 +25,20 @@ object GpxExporter {
         append("xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" ")
         append("xsi:schemaLocation=\"http://www.topografix.com/GPX/1/1 ")
         append("http://www.topografix.com/GPX/1/1/gpx.xsd\">\n")
-        records.forEach { append(wpt(it)) }
+        // GPX waypoints require coordinates; unlocated observations remain available in CSV.
+        records.forEach { record ->
+            val lat = record.latitude
+            val lon = record.longitude
+            if (lat != null && lon != null) append(wpt(record, lat, lon))
+        }
         append("</gpx>\n")
     }
 
-    private fun wpt(record: LocationRecord): String = buildString {
+    private fun wpt(record: LocationRecord, latitude: Double, longitude: Double): String = buildString {
         append("  <wpt lat=\"")
-        append(format(record.latitude))
+        append(format(latitude))
         append("\" lon=\"")
-        append(format(record.longitude))
+        append(format(longitude))
         append("\">\n")
         append("    <time>")
         append(iso8601(record.triggerTimestamp))
@@ -53,6 +58,9 @@ object GpxExporter {
         append(" | Source: ").append(record.locationSource)
         record.accuracyMeters?.let { append(" | Accuracy: ±").append(it.toInt()).append(" m") }
         record.locationAgeSeconds?.let { append(" | Fix age: ").append(it).append(" s") }
+        record.observation?.let { append(" | Observation: ").append(it) }
+        record.transcript?.let { append(" | Transcript: ").append(it) }
+        record.category?.let { append(" | Category: ").append(it) }
         record.notes?.let { append(" | ").append(it) }
     }
 

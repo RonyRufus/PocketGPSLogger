@@ -34,8 +34,6 @@ data class AppSettings(
      * (enforced by [com.pocketgps.logger.audio.TriggerMatcher.isValidTrigger] at write time).
      */
     val triggerPhrases: List<String> = listOf(DEFAULT_TRIGGER_PHRASE),
-    /** Display helper: the first configured trigger. */
-    val primaryTrigger: String get() = triggerPhrases.firstOrNull() ?: DEFAULT_TRIGGER_PHRASE,
     val confirmationMode: ConfirmationMode = ConfirmationMode.SPEECH,
     val gpsTimeoutSeconds: Int = 15,
     val cachedLocationPolicy: CachedLocationPolicy = CachedLocationPolicy.PREFER_RECENT,
@@ -61,6 +59,12 @@ data class AppSettings(
      */
     val voiceNotes: Boolean = true,
 ) {
+    /** Display helper: the first configured trigger. */
+    val primaryTrigger: String get() = triggerPhrases.firstOrNull() ?: DEFAULT_TRIGGER_PHRASE
+
+    /** Backwards-compatible display alias for older UI/state consumers. */
+    val triggerPhrase: String get() = primaryTrigger
+
     companion object {
         const val DEFAULT_TRIGGER_PHRASE = "save spot"
         const val MIN_GPS_TIMEOUT_SECONDS = 5

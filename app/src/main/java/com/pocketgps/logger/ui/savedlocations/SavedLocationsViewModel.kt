@@ -6,10 +6,15 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.pocketgps.logger.ServiceLocator
 import com.pocketgps.logger.data.LocationRecord
+import com.pocketgps.logger.data.SearchPatterns
 import com.pocketgps.logger.export.CsvExporter
 import com.pocketgps.logger.export.GpxExporter
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.stateIn
@@ -23,8 +28,21 @@ class SavedLocationsViewModel(application: Application) : AndroidViewModel(appli
 
     private val repository = ServiceLocator.locationRepository
 
-    val records: StateFlow<List<LocationRecord>> = repository.observeAll()
+    private val _searchQuery = MutableStateFlow("")
+    val searchQuery = _searchQuery.asStateFlow()
+
+    val records: StateFlow<List<LocationRecord>> = searchQuery
+        .map { it.trim() }
+        .distinctUntilChanged()
+        .flatMapLatest { query ->
+            if (query.isBlank()) repository.observeAll()
+            else repository.search(SearchPatterns.forQuery(query), newestFirst = true, category = null)
+        }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+
+    fun setSearchQuery(value: String) {
+        _searchQuery.value = value
+    }
 
     private val _stats = MutableStateFlow(Stats())
     val stats: StateFlow<Stats> = _stats
@@ -49,7 +67,7 @@ class SavedLocationsViewModel(application: Application) : AndroidViewModel(appli
     }
 
     suspend fun refreshStats() {
-        val total = records.value.size
+        val total = repository.count()
         val zone = java.util.TimeZone.getDefault()
         val now = Calendar.getInstance(zone)
         val todayStart = now.apply {
@@ -66,6 +84,12 @@ class SavedLocationsViewModel(application: Application) : AndroidViewModel(appli
         viewModelScope.launch { repository.delete(id) }
     }
 
+    fun updateRecord(record: LocationRecord) {
+        viewModelScope.launch(Dispatchers.IO) {
+            repository.update(record.copy(modifiedTimestamp = System.currentTimeMillis()))
+        }
+    }
+
     fun clearAll() {
         viewModelScope.launch { repository.clearAll() }
     }
@@ -80,6 +104,17 @@ class SavedLocationsViewModel(application: Application) : AndroidViewModel(appli
                     _exportOp.value = ExportOp.Failed("Nothing to export yet")
                     return@launch
                 }
+                val waypointCount = if (gpx) {
+                    records.count { it.latitude != null && it.longitude != null }
+                } else {
+                    records.size
+                }
+                if (gpx && waypointCount == 0) {
+                    _exportOp.value = ExportOp.Failed(
+                        "No records have GPS coordinates. Export CSV to include unlocated observations.",
+                    )
+                    return@launch
+                }
                 val content = withContext(Dispatchers.Default) {
                     if (gpx) GpxExporter.export(records) else CsvExporter.export(records)
                 }
@@ -88,7 +123,13 @@ class SavedLocationsViewModel(application: Application) : AndroidViewModel(appli
                         out.write(content.toByteArray(Charsets.UTF_8))
                     } ?: throw IOException("Could not open the selected file for writing")
                 }
-                _exportOp.value = ExportOp.Done("Exported ${records.size} spot(s)")
+                _exportOp.value = ExportOp.Done(
+                    if (gpx && waypointCount < records.size) {
+                        "Exported $waypointCount waypoint(s); ${records.size - waypointCount} unlocated note(s) omitted from GPX. Use CSV to include all records."
+                    } else {
+                        "Exported $waypointCount record(s)"
+                    },
+                )
             } catch (t: Throwable) {
                 _exportOp.value = ExportOp.Failed(t.message ?: "Export failed")
             }

@@ -56,7 +56,11 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
     }
 
     fun setTriggerPhrase(phrase: String) {
-        viewModelScope.launch { settingsRepository.setTriggerPhrase(phrase) }
+        val phrases = phrase.split('\n', ',', ';')
+            .map { it.trim() }
+            .filter { it.isNotEmpty() }
+            .distinctBy { it.lowercase() }
+        viewModelScope.launch { settingsRepository.setTriggerPhrases(phrases) }
     }
 
     fun setConfirmationMode(mode: ConfirmationMode) {
@@ -89,6 +93,10 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
 
     fun setHapticFeedback(value: Boolean) {
         viewModelScope.launch { settingsRepository.setHapticFeedback(value) }
+    }
+
+    fun setVoiceNotes(value: Boolean) {
+        viewModelScope.launch { settingsRepository.setVoiceNotes(value) }
     }
 
     fun importModel(uri: Uri) {
