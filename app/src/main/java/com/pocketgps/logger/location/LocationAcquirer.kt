@@ -135,7 +135,7 @@ class LocationAcquirer(private val context: Context) {
     /**
      * Try to obtain a usable fix for a trigger detected at [triggerTimestampMs].
      *
-     * Order:
+     * Order (all acceptance rules live in [LocationPolicy]):
      *  1. If policy is PREFER_RECENT and the best cached fix (pre-warm stream, fused
      *     last-known, platform last-known) is fresh + accurate enough → CACHED.
      *  2. Request a fresh fix bounded by `gpsTimeoutSeconds`.
@@ -154,19 +154,17 @@ class LocationAcquirer(private val context: Context) {
             return@withContext Result.Unavailable("GPS / location services are disabled")
         }
 
-        val cached = bestKnownLocation()
+        val cached = bestKnownLocation()?.toCandidate()
 
         // 1. Prefer a recent, accurate cached fix.
-        if (settings.cachedLocationPolicy == CachedLocationPolicy.PREFER_RECENT && cached != null) {
-            // Age the fix when deciding to use it, not when the trigger was detected.
-            // GPS acquisition can wait up to 60 seconds, so trigger-time age is misleading.
-            val age = ageSeconds(cached, System.currentTimeMillis())
-            val accuracy = cached.accuracy.takeIf { hasAccuracy(it) }
-            val recentEnough = cached.time > 0L && age <= settings.cachedMaxAgeSeconds
-            val accurateEnough = accuracy == null || accuracy <= settings.maxAccuracyMeters
-            if (recentEnough && accurateEnough) {
-                return@withContext Result.Success(toFix(cached, LocationSource.CACHED, age))
-            }
+        if (settings.cachedLocationPolicy == CachedLocationPolicy.PREFER_RECENT) {
+            val immediate = LocationPolicy.cachedImmediate(
+                cached = cached,
+                nowMs = System.currentTimeMillis(),
+                cachedMaxAgeSeconds = settings.cachedMaxAgeSeconds,
+                maxAccuracyMeters = settings.maxAccuracyMeters,
+            )
+            if (immediate != null) return@withContext Result.Success(immediate.toFix())
         }
 
         // 2. Request a fresh fix with a hard timeout.
@@ -174,68 +172,32 @@ class LocationAcquirer(private val context: Context) {
         val fresh = withTimeoutOrNull(timeoutMs) { requestFreshFix() }
 
         if (fresh != null) {
-            val freshAge = ageSeconds(fresh, System.currentTimeMillis())
-            // getCurrentLocation may return a cached provider fix. Do not label it fresh merely
-            // because it came back from the one-shot API; require a valid, recent timestamp.
-            if (fresh.time <= 0L || freshAge > settings.cachedMaxAgeSeconds) {
-                return@withContext Result.Unavailable(
-                    "GPS provider returned a stale fix (${freshAge}s old; limit ${settings.cachedMaxAgeSeconds}s)",
-                )
-            }
-            val accuracy = fresh.accuracy.takeIf { hasAccuracy(it) }
-            val usable = accuracy == null || accuracy <= settings.maxAccuracyMeters
-            if (usable) {
-                return@withContext Result.Success(
-                    toFix(fresh, LocationSource.FRESH, freshAge),
-                )
-            }
-            // Fresh but poor accuracy. Prefer a better cached fix if one exists, else return the
-            // fresh fix (the UI flags poor accuracy) unless it is clearly meaningless.
-            if (cached != null) {
-                val cachedAge = ageSeconds(cached, System.currentTimeMillis())
-                val cachedAccuracy = cached.accuracy.takeIf { hasAccuracy(it) }
-                val cachedIsUsable = cached.time > 0L && cachedAge <= settings.cachedMaxAgeSeconds
-                    (cachedAccuracy == null || cachedAccuracy <= settings.maxAccuracyMeters) &&
-                    (cachedAccuracy == null || cached.accuracy <= fresh.accuracy)
-                if (cachedIsUsable) {
-                    return@withContext Result.Success(
-                        toFix(cached, LocationSource.FALLBACK, cachedAge),
-                    )
-                }
-            }
-            if (accuracy == null || accuracy <= ABSURD_ACCURACY_METERS) {
-                return@withContext Result.Success(
-                    toFix(fresh, LocationSource.FRESH, ageSeconds(fresh, System.currentTimeMillis())),
-                )
-            }
-            return@withContext Result.Unavailable(
-                "Fresh fix accuracy too poor (${accuracy.toInt()} m)",
+            val decision = LocationPolicy.judgeFresh(
+                fresh = fresh.toCandidate(),
+                cached = cached,
+                nowMs = System.currentTimeMillis(),
+                cachedMaxAgeSeconds = settings.cachedMaxAgeSeconds,
+                maxAccuracyMeters = settings.maxAccuracyMeters,
             )
+            return@withContext when (decision) {
+                is LocationPolicy.Decision.Accept -> Result.Success(decision.fix.toFix())
+                is LocationPolicy.Decision.Unavailable -> Result.Unavailable(decision.reason)
+            }
         }
 
         // 3. Fresh request timed out. Never label old coordinates as a successful current save:
         // only use a fallback that remains within the configured age and accuracy limits.
-        if (cached != null) {
-            val age = ageSeconds(cached, System.currentTimeMillis())
-            val accuracy = cached.accuracy.takeIf { hasAccuracy(it) }
-            val recentEnough = cached.time > 0L && age <= settings.cachedMaxAgeSeconds
-            val accurateEnough = accuracy == null || accuracy <= settings.maxAccuracyMeters
-            if (recentEnough && accurateEnough) {
-                return@withContext Result.Success(toFix(cached, LocationSource.FALLBACK, age))
-            }
-            val reasons = buildList {
-                if (cached.time <= 0L) add("last fix has no valid timestamp")
-                else if (!recentEnough) add("last fix is ${age}s old (limit ${settings.cachedMaxAgeSeconds}s)")
-                if (!accurateEnough && accuracy != null) {
-                    add("last fix accuracy is ${accuracy.toInt()} m (limit ${settings.maxAccuracyMeters.toInt()} m)")
-                }
-            }
-            return@withContext Result.Unavailable(
-                "Fresh GPS fix timed out; refusing stale/poor fallback: ${reasons.joinToString("; ")}",
-            )
+        val decision = LocationPolicy.fallbackAfterTimeout(
+            cached = cached,
+            nowMs = System.currentTimeMillis(),
+            cachedMaxAgeSeconds = settings.cachedMaxAgeSeconds,
+            maxAccuracyMeters = settings.maxAccuracyMeters,
+            timeoutSeconds = settings.gpsTimeoutSeconds,
+        )
+        return@withContext when (decision) {
+            is LocationPolicy.Decision.Accept -> Result.Success(decision.fix.toFix())
+            is LocationPolicy.Decision.Unavailable -> Result.Unavailable(decision.reason)
         }
-
-        return@withContext Result.Unavailable("No fresh GPS fix within ${settings.gpsTimeoutSeconds}s")
     }
 
     // ------------------------------------------------------------------ backends
@@ -353,27 +315,27 @@ class LocationAcquirer(private val context: Context) {
 
     // ------------------------------------------------------------------ helpers
 
-    private fun toFix(location: Location, source: LocationSource, age: Int): Fix = Fix(
-        latitude = location.latitude,
-        longitude = location.longitude,
-        accuracyMeters = location.accuracy.takeIf { hasAccuracy(it) },
-        fixTimestampMs = location.time.takeIf { it > 0 } ?: System.currentTimeMillis(),
-        source = source,
-        ageSeconds = age,
-    )
+    private fun toCandidate(location: Location): LocationPolicy.FixCandidate =
+        LocationPolicy.FixCandidate(
+            latitude = location.latitude,
+            longitude = location.longitude,
+            accuracyMeters = location.accuracy.takeIf { hasAccuracy(it) },
+            rawAccuracyMeters = location.accuracy,
+            timestampMs = location.time,
+        )
 
-    private fun ageSeconds(location: Location, triggerTimestampMs: Long): Int {
-        val fixTime = location.time.takeIf { it > 0 } ?: return 0
-        val ageMs = (triggerTimestampMs - fixTime).coerceAtLeast(0)
-        return (ageMs / 1000).toInt()
-    }
+    private fun LocationPolicy.AcceptedFix.toFix(): Fix = Fix(
+        latitude = latitude,
+        longitude = longitude,
+        accuracyMeters = accuracyMeters,
+        fixTimestampMs = fixTimestampMs,
+        source = source,
+        ageSeconds = ageSeconds,
+    )
 
     private fun hasAccuracy(value: Float): Boolean = value > 0f && !value.isNaN()
 
     companion object {
-        /** Beyond this, a fix is not a location so much as a guess. */
-        const val ABSURD_ACCURACY_METERS = 1000f
-
         /** Pre-warm subscription cadence: frequent enough to stay warm, rare enough to be cheap. */
         const val PRE_WARM_INTERVAL_MS = 30_000L
     }

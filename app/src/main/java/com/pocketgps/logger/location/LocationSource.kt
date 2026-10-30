@@ -13,7 +13,10 @@ enum class LocationSource(val wire: String) {
     CACHED("cached"),
 
     /** A last-known fix used only after a fresh request timed out (explicitly stale). */
-    FALLBACK("fallback");
+    FALLBACK("fallback"),
+
+    /** The record carries no location at all (a note saved while GPS was unavailable). */
+    NONE("none");
 
     companion object {
         fun fromWire(value: String?): LocationSource =

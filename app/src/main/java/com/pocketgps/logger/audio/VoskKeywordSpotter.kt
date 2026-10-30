@@ -5,11 +5,16 @@ import org.vosk.Model
 import org.vosk.Recognizer
 
 /**
- * Persistent Vosk recognizer running in grammar-constrained mode over the raw 16 kHz PCM stream.
+ * Persistent Vosk recognizer over the raw 16 kHz PCM stream, supporting two modes:
+ *  - **Constrained grammar** (default): only the configured trigger words plus decoys can be
+ *    emitted — best trigger accuracy, lowest CPU, but it cannot transcribe a note.
+ *  - **Dictation** ([setDictation](true)): an unconstrained recognizer over the same small
+ *    model, used for "trigger + note" voice captures. Slightly more CPU per active chunk; the
+ *    voice gate keeps the idle cost unchanged.
  *
  * The recognizer is created **once** per listening session and reused for every chunk; it is
- * never torn down between utterances. When the trigger phrase changes, [updateGrammar] swaps in a
- * fresh recognizer while carrying the stream clock forward so timing stays continuous.
+ * never torn down between utterances. When the trigger phrases change, [updateGrammar] swaps
+ * in a fresh recognizer while carrying the stream clock forward so timing stays continuous.
  */
 class VoskKeywordSpotter(
     private val model: Model,
@@ -21,17 +26,22 @@ class VoskKeywordSpotter(
         private const val TAG = "VoskKeywordSpotter"
     }
 
-    private var recognizer: Recognizer = newRecognizer(initialPhrases)
-    private var streamBaseSamples: Long = 0L
-    private var totalSamplesFed: Long = 0L
+    private var dictation = false
+    private var phrases: List<String> = initialPhrases
 
-    private fun newRecognizer(phrases: List<String>): Recognizer =
+    private var recognizer: Recognizer = newRecognizer()
+
+    private fun newRecognizer(): Recognizer =
         try {
-            Recognizer(model, sampleRate.toFloat(), GrammarJson.build(phrases)).apply {
-                setWords(true)
+            val grammar = if (dictation) null else GrammarJson.build(phrases)
+            val rec = if (grammar == null) {
+                Recognizer(model, sampleRate.toFloat())
+            } else {
+                Recognizer(model, sampleRate.toFloat(), grammar)
             }
+            rec.apply { setWords(true) }
         } catch (t: Throwable) {
-            Log.e(TAG, "Failed to create Vosk Recognizer for phrases=$phrases", t)
+            Log.e(TAG, "Failed to create Vosk Recognizer (dictation=$dictation)", t)
             throw t
         }
 
@@ -39,8 +49,8 @@ class VoskKeywordSpotter(
      * Feed [length] samples from [pcm] starting at [offset].
      * Returns the parsed final-result words (possibly empty).
      *
-     * Synchronised with [updateGrammar]/[close]: a grammar rebuild closes the old native
-     * recognizer, so it must never happen while another thread is inside a JNI call.
+     * Synchronised with [updateGrammar]/[setDictation]/[close]: a grammar rebuild closes the
+     * old native recognizer, so it must never happen while another thread is inside a JNI call.
      */
     @Synchronized
     override fun acceptWaveForm(pcm: ShortArray, offset: Int, length: Int): List<RecognitionEvent> {
@@ -70,13 +80,29 @@ class VoskKeywordSpotter(
     /** Total audio seconds consumed since the session began (continuous clock). */
     override fun streamSeconds(): Float = totalSamplesFed.toFloat() / sampleRate
 
+    private var streamBaseSamples: Long = 0L
+    private var totalSamplesFed: Long = 0L
+
     @Synchronized
-    override fun updateGrammar(phrases: List<String>) {
+    override fun updateGrammar(newPhrases: List<String>) {
+        if (!dictation && newPhrases == phrases) return
         val old = recognizer
+        phrases = newPhrases
         streamBaseSamples = totalSamplesFed
-        recognizer = newRecognizer(phrases)
+        recognizer = newRecognizer()
         runCatching { old.close() }.onFailure { Log.w(TAG, "Failed to close old recognizer", it) }
-        Log.d(TAG, "Grammar updated to $phrases")
+        Log.d(TAG, "Grammar updated to $newPhrases")
+    }
+
+    @Synchronized
+    override fun setDictation(enabled: Boolean) {
+        if (enabled == dictation) return
+        val old = recognizer
+        dictation = enabled
+        streamBaseSamples = totalSamplesFed
+        recognizer = newRecognizer()
+        runCatching { old.close() }.onFailure { Log.w(TAG, "Failed to close old recognizer", it) }
+        Log.d(TAG, "Dictation mode set to $enabled")
     }
 
     @Synchronized
@@ -95,5 +121,7 @@ interface KeywordSpotter {
     fun partialResult(): String?
     fun streamSeconds(): Float
     fun updateGrammar(phrases: List<String>)
+    /** Switch between the constrained grammar and unconstrained dictation. */
+    fun setDictation(enabled: Boolean)
     fun close()
 }

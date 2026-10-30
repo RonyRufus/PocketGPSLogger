@@ -29,7 +29,13 @@ enum class CachedLocationPolicy {
  * User-configurable settings. Defaults match the spec ("save spot", short GPS timeout, etc.).
  */
 data class AppSettings(
-    val triggerPhrase: String = DEFAULT_TRIGGER_PHRASE,
+    /**
+     * One or more trigger phrases. Any of them saves a spot; each must be at least two words
+     * (enforced by [com.pocketgps.logger.audio.TriggerMatcher.isValidTrigger] at write time).
+     */
+    val triggerPhrases: List<String> = listOf(DEFAULT_TRIGGER_PHRASE),
+    /** Display helper: the first configured trigger. */
+    val primaryTrigger: String get() = triggerPhrases.firstOrNull() ?: DEFAULT_TRIGGER_PHRASE,
     val confirmationMode: ConfirmationMode = ConfirmationMode.SPEECH,
     val gpsTimeoutSeconds: Int = 15,
     val cachedLocationPolicy: CachedLocationPolicy = CachedLocationPolicy.PREFER_RECENT,
@@ -47,6 +53,13 @@ data class AppSettings(
     val gpsPreWarm: Boolean = true,
     /** Vibrate once on a saved spot and twice on failure. Useful when cues can't be heard. */
     val hapticFeedback: Boolean = true,
+    /**
+     * Dictation mode: the recognizer runs unconstrained so an utterance can be
+     * "trigger + observation" ("save spot, new apartment near the junction"). When off, the
+     * constrained grammar listens for the trigger words only (lowest CPU, best trigger
+     * accuracy, no notes).
+     */
+    val voiceNotes: Boolean = true,
 ) {
     companion object {
         const val DEFAULT_TRIGGER_PHRASE = "save spot"

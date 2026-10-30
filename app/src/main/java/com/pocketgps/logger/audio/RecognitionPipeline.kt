@@ -6,7 +6,8 @@ package com.pocketgps.logger.audio
  * (synthetic PCM + scripted spotter).
  *
  * Performance contract:
- *  - [buffer] is allocated once; the per-chunk path performs no heap allocation.
+ *  - [buffer] is allocated once; the per-chunk path performs no heap allocation except on the
+ *    rare final-result / note-capture events.
  *  - JSON parsing happens only when Vosk emits a final result.
  *  - GPS work is **never** done here; [onTrigger] merely hands off to the service.
  *  - A [VoiceGate] skips the recognizer during sustained silence, so a pocket-mounted phone
@@ -17,19 +18,45 @@ package com.pocketgps.logger.audio
  *    split across two Vosk segments still matches.
  *  - A matched phrase clears the buffer and starts a cooldown, so one utterance can never
  *    create two records.
+ *
+ * Multiple triggers:
+ *  - Any configured trigger phrase may fire; [TriggerMatcher.findFirstMatch] resolves which
+ *    one matched deterministically (earliest word wins, declaration order breaks ties).
+ *
+ * Dictation mode (voice notes):
+ *  - When dictation is enabled, the spotter runs unconstrained. On a trigger match the pipeline
+ *    does not fire immediately; it enters note capture and collects the words that follow the
+ *    trigger until the speaker pauses (voice gate closes with words already collected), a
+ *    second trigger is heard, the word cap is reached, the capture window elapses, or the
+ *    audio source ends. It then fires once, with the dictated note (null when the user said
+ *    only the trigger — a location-only save). Words spoken before the trigger are not part of
+ *    the note; the complete normalised utterance is returned as the transcript so nothing
+ *    recognised is silently discarded.
+ *  - With dictation disabled (constrained grammar), the historical behaviour is kept: fire the
+ *    moment the trigger is accepted, with a null note.
  */
 class RecognitionPipeline(
     private val audio: PcmAudioSource,
     private val spotter: KeywordSpotter,
-    initialTriggerPhrase: String,
+    initialTriggers: List<String>,
     private val chunkSize: Int = 2048,
     /** Monotonic nanoseconds provider (SystemClock.elapsedRealtimeNanos in production). */
     private val clock: () -> Long,
     cooldownSeconds: Int = 3,
+    /** Wall-clock seconds a dictation capture waits for note words after a trigger. */
+    private val noteWindowSeconds: Float = 4f,
+    /** Hard cap on dictation capture words so a runaway capture cannot grow unbounded. */
+    private val maxNoteWords: Int = 64,
 ) {
 
     /** Fired once per accepted trigger. Must return quickly; do GPS work off-thread. */
-    var onTrigger: ((triggerNanos: Long, phrase: String, confidence: Float) -> Unit)? = null
+    var onTrigger: ((
+        triggerNanos: Long,
+        phrase: String,
+        confidence: Float,
+        note: String?,
+        transcript: String?,
+    ) -> Unit)? = null
 
     var onPartial: ((String?) -> Unit)? = null
     var onMuteDetected: (() -> Unit)? = null
@@ -48,14 +75,20 @@ class RecognitionPipeline(
     var cooldownSeconds: Int = cooldownSeconds
 
     @Volatile
-    private var triggerPhrase: String = initialTriggerPhrase
+    private var triggerPhrases: List<String> = initialTriggers
 
     @Volatile
-    private var triggerTokens: List<String> = GrammarJson.wordsOf(initialTriggerPhrase)
+    private var triggerTokens: List<List<String>> = initialTriggers.map(GrammarJson::wordsOf)
+
+    /** Unconstrained dictation (voice notes) vs constrained grammar. Audio thread only. */
+    private var dictation = false
 
     /** Set from any thread; applied at the start of the next chunk on the audio thread. */
     @Volatile
-    private var pendingTriggerPhrase: String? = null
+    private var pendingTriggers: List<String>? = null
+
+    @Volatile
+    private var pendingDictation: Boolean? = null
 
     private val buffer = ShortArray(chunkSize)
     private val zeros = ShortArray(chunkSize)
@@ -67,9 +100,13 @@ class RecognitionPipeline(
     /** Rolling window in *wall-clock* seconds — not stream time, which stalls while gated. */
     private val maxRecentSeconds = 4f
 
+    /** In-flight dictation capture after a trigger matched; null while just spotting. */
+    private var noteCapture: NoteCapture? = null
+
     private var cooldownUntilNs = 0L
     private var consecutiveZeroChunks = 0
     private var muteFired = false
+    private var lastGateOpen = false
 
     /** Number of consecutive all-zero chunks treated as "mic muted / privacy blocked". */
     var muteChunksThreshold: Int = 24 // ~3 s at 128 ms chunks
@@ -81,9 +118,13 @@ class RecognitionPipeline(
      * Process exactly one audio chunk. Returns false when the source errored or is exhausted.
      */
     fun processOneChunk(): Boolean {
-        applyPendingTrigger()
+        applyPendingUpdates()
+        advanceNoteCaptureDeadline()
+
         val n = audio.read(buffer, 0, chunkSize)
         if (n <= 0) {
+            // Source ended or failed: flush an in-flight note so it is never silently dropped.
+            fireNoteCaptureIfAny()
             if (audio.isExhausted()) return false
             onSourceError?.invoke("AudioRecord read returned $n")
             return false
@@ -97,11 +138,20 @@ class RecognitionPipeline(
             // While our own cue plays, drain real audio but feed silence so the app never
             // transcribes itself. The gate is closed during the window; real speech reopens it.
             voiceGate.forceClose()
+            lastGateOpen = false
             spotter.acceptWaveForm(zeros, 0, n)
             return true
         }
 
-        if (!voiceGate.process(rms)) {
+        val gateOpen = voiceGate.process(rms)
+        if (lastGateOpen && !gateOpen) {
+            // The gate's tail elapsed after speech: a natural end of utterance. A dictation
+            // capture that already has note words is complete.
+            if (noteCapture?.hasNoteWords == true) fireNoteCaptureIfAny()
+        }
+        lastGateOpen = gateOpen
+
+        if (!gateOpen) {
             // Sustained silence: skip the expensive recognizer work for this chunk. The Vosk
             // stream simply does not advance; the next active chunk resumes exactly where the
             // stream left off, so matching across the pause still works.
@@ -123,6 +173,32 @@ class RecognitionPipeline(
 
     private fun handleFinalWords(events: List<RecognitionEvent>) {
         val wallNs = clock()
+
+        val capture = noteCapture
+        if (capture != null) {
+            // Dictation capture in progress: every final word is note material — unless it
+            // contains a second trigger, which terminates the capture at that point.
+            events.forEach { capture.allWords.add(it) }
+            if (capture.allWords.size >= maxNoteWords) {
+                fireNoteCaptureIfAny()
+                return
+            }
+            val words = capture.allWords.map { it.event.word }
+            // Only the note region can contain a *second* trigger; the prefix before the first
+            // trigger is frozen history and may legitimately contain another phrase.
+            val second = TriggerMatcher.findFirstMatch(
+                words.subList(capture.noteWordStart, words.size),
+                triggerTokens,
+            )
+            if (second != null) {
+                // Keep only the words before the second trigger as the note; the cooldown makes
+                // an immediate second save unsafe (GPS acquisition takes seconds).
+                capture.truncateToNoteWordCount(second.wordStart)
+                fireNoteCaptureIfAny()
+            }
+            return
+        }
+
         events.forEach { recentWords.addLast(RecentWord(it, wallNs)) }
         // Expire by wall clock. With the voice gate stalling the Vosk stream during silence,
         // stream-time expiry could pair a half-spoken word with another utterance minutes
@@ -135,13 +211,10 @@ class RecognitionPipeline(
         if (recentWords.isEmpty()) return
 
         val words = recentWords.map { it.event.word }
-        val matchStart = TriggerMatcher.matchStartIndex(words, triggerTokens)
-        if (matchStart < 0) return
+        val match = TriggerMatcher.findFirstMatch(words, triggerTokens) ?: return
 
-        // Score the exact words that matched. The trigger may occur before trailing words in
-        // the same final Vosk segment, so scoring only the last N words can reject a valid match
-        // or accept one based on unrelated words.
-        val confidence = meanConfidenceAt(matchStart, triggerTokens.size)
+        // Score the exact words that matched, at the offsets that matched.
+        val confidence = meanConfidenceAt(match.wordStart, match.wordCount)
         if (confidence < minConfidence) return
 
         val nowNs = clock()
@@ -151,23 +224,78 @@ class RecognitionPipeline(
             return
         }
 
+        val phrase = triggerPhrases.getOrNull(match.triggerIndex) ?: return
+        if (dictation) {
+            // Keep the whole matched window (prefix + trigger + what followed in the same final
+            // segment) for the transcript, then keep collecting the dictated note.
+            val windowWords = ArrayDeque(recentWords.map { it.event })
+            recentWords.clear()
+            noteCapture = NoteCapture(
+                phrase = phrase,
+                confidence = confidence,
+                startedNs = nowNs,
+                allWords = windowWords,
+                noteWordStart = match.wordStart + match.wordCount,
+            )
+            return
+        }
+
         cooldownUntilNs = nowNs + cooldownSeconds * 1_000_000_000L
         recentWords.clear()
-        onTrigger?.invoke(nowNs, TriggerMatcher.normalize(triggerPhrase), confidence)
+        onTrigger?.invoke(nowNs, TriggerMatcher.normalize(phrase), confidence, null, null)
+    }
+
+    /** End a dictation capture when its wall-clock window expires. Audio thread only. */
+    private fun advanceNoteCaptureDeadline() {
+        val capture = noteCapture ?: return
+        if (clock() - capture.startedNs > noteWindowSeconds * 1_000_000_000L) {
+            fireNoteCaptureIfAny()
+        }
+    }
+
+    private fun fireNoteCaptureIfAny() {
+        val capture = noteCapture ?: return
+        noteCapture = null
+        val all = capture.allWords.map { it.event.word }
+        val transcript = all.joinToString(" ").trim().ifEmpty { null }
+        val noteWords = if (capture.noteWordStart >= all.size) {
+            emptyList()
+        } else {
+            all.subList(capture.noteWordStart, all.size)
+        }
+        val note = noteWords.joinToString(" ").trim().ifEmpty { null }
+        val nowNs = clock()
+        cooldownUntilNs = nowNs + cooldownSeconds * 1_000_000_000L
+        recentWords.clear()
+        onTrigger?.invoke(nowNs, TriggerMatcher.normalize(capture.phrase), capture.confidence, note, transcript)
     }
 
     /** Request a live trigger-phrase change; applied safely on the audio thread. */
-    fun updateTrigger(newPhrase: String) {
-        pendingTriggerPhrase = newPhrase
+    fun updateTriggers(newPhrases: List<String>) {
+        pendingTriggers = newPhrases
+    }
+
+    /** Request a dictation-mode change; applied safely on the audio thread. */
+    fun updateDictation(enabled: Boolean) {
+        pendingDictation = enabled
     }
 
     /** Must only be called from the audio thread (inside [processOneChunk]). */
-    private fun applyPendingTrigger() {
-        val phrase = pendingTriggerPhrase ?: return
-        pendingTriggerPhrase = null
-        triggerPhrase = phrase
-        triggerTokens = GrammarJson.wordsOf(phrase)
-        recentWords.clear()
+    private fun applyPendingUpdates() {
+        pendingTriggers?.let { phrases ->
+            pendingTriggers = null
+            triggerPhrases = phrases
+            triggerTokens = phrases.map(GrammarJson::wordsOf)
+            recentWords.clear()
+        }
+        pendingDictation?.let { enabled ->
+            pendingDictation = null
+            if (enabled != dictation) {
+                dictation = enabled
+                noteCapture = null
+                recentWords.clear()
+            }
+        }
     }
 
     private fun meanConfidenceAt(start: Int, count: Int): Float {
@@ -177,6 +305,28 @@ class RecognitionPipeline(
             sum += recentWords.elementAt(index).event.confidence.toDouble()
         }
         return (sum / count).toFloat()
+    }
+
+    /**
+     * A dictation capture in progress, created when a trigger matches in dictation mode.
+     * [allWords] holds every recognised word from the match window onward (prefix words
+     * included, so the transcript is complete); the note is the words from [noteWordStart] on.
+     */
+    private class NoteCapture(
+        val phrase: String,
+        val confidence: Float,
+        val startedNs: Long,
+        val allWords: ArrayDeque<RecognitionEvent>,
+        /** Index of the first post-trigger word inside [allWords]. */
+        val noteWordStart: Int,
+    ) {
+        val hasNoteWords: Boolean get() = noteWordStart < allWords.size
+
+        /** Drop everything from note word [count] onward (second-trigger termination). */
+        fun truncateToNoteWordCount(count: Int) {
+            val last = noteWordStart + count.coerceAtLeast(0)
+            while (allWords.size > last) allWords.removeLast()
+        }
     }
 
     /** A recognised word plus the wall-clock time it was captured. */
@@ -211,6 +361,7 @@ class RecognitionPipeline(
         while (shouldContinue()) {
             if (!processOneChunk()) return
         }
+        fireNoteCaptureIfAny()
     }
 
     /** Normalised RMS in [0, 1], computed inline without allocation. */
