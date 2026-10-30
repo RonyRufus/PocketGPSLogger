@@ -37,6 +37,7 @@ class RecognitionPipelineTest {
         override fun partialResult(): String? = null
         override fun streamSeconds(): Float = call * 0.128f
         override fun updateGrammar(phrases: List<String>) = Unit
+        override fun setDictation(enabled: Boolean) = Unit
         override fun close() = Unit
     }
 
@@ -57,11 +58,11 @@ class RecognitionPipelineTest {
         val pl = RecognitionPipeline(
             audio = FakeAudioSource(chunks),
             spotter = ScriptedSpotter(script),
-            initialTriggerPhrase = "save spot",
+            initialTriggers = listOf("save spot"),
             clock = clock,
             cooldownSeconds = 3,
         )
-        pl.onTrigger = { ns, _, _ -> triggers.add(ns) }
+        pl.onTrigger = { ns, _, _, _, _ -> triggers.add(ns) }
         return pl to triggers
     }
 
