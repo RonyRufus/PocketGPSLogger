@@ -21,9 +21,15 @@ internal class PocketTapDetector(
 ) : SensorEventListener {
 
     private val manager = context.getSystemService(Context.SENSOR_SERVICE) as SensorManager
-    private val linearSensor = manager.getDefaultSensor(Sensor.TYPE_LINEAR_ACCELERATION)
-    private val accelerometer = manager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
-    private val sensor: Sensor? = linearSensor ?: accelerometer
+    // Prefer wake-up sensors: ordinary accelerometers are often suspended when the screen turns off.
+    // A non-wakeup fallback can work on some devices, but cannot guarantee screen-off delivery.
+    private val sensor: Sensor? =
+        manager.getDefaultSensor(Sensor.TYPE_LINEAR_ACCELERATION, true)
+            ?: manager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER, true)
+            ?: manager.getDefaultSensor(Sensor.TYPE_LINEAR_ACCELERATION)
+            ?: manager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
+
+    val hasWakeUpSensor: Boolean get() = sensor?.isWakeUpSensor == true
     private val classifier = DoubleTapClassifier()
 
     private var registered = false
@@ -40,7 +46,7 @@ internal class PocketTapDetector(
         val selected = sensor ?: return false
         classifier.reset()
         gravityInitialized = false
-        registered = manager.registerListener(this, selected, SensorManager.SENSOR_DELAY_GAME)
+        registered = manager.registerListener(this, selected, SensorManager.SENSOR_DELAY_UI)
         return registered
     }
 
