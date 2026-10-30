@@ -157,7 +157,9 @@ class LocationAcquirer(private val context: Context) {
 
         // 1. Prefer a recent, accurate cached fix.
         if (settings.cachedLocationPolicy == CachedLocationPolicy.PREFER_RECENT && cached != null) {
-            val age = ageSeconds(cached, triggerTimestampMs)
+            // Age the fix when deciding to use it, not when the trigger was detected.
+            // GPS acquisition can wait up to 60 seconds, so trigger-time age is misleading.
+            val age = ageSeconds(cached, System.currentTimeMillis())
             val accuracy = cached.accuracy.takeIf { hasAccuracy(it) }
             val recentEnough = age <= settings.cachedMaxAgeSeconds
             val accurateEnough = accuracy == null || accuracy <= settings.maxAccuracyMeters
@@ -175,15 +177,22 @@ class LocationAcquirer(private val context: Context) {
             val usable = accuracy == null || accuracy <= settings.maxAccuracyMeters
             if (usable) {
                 return@withContext Result.Success(
-                    toFix(fresh, LocationSource.FRESH, ageSeconds(fresh, triggerTimestampMs)),
+                    toFix(fresh, LocationSource.FRESH, ageSeconds(fresh, System.currentTimeMillis())),
                 )
             }
             // Fresh but poor accuracy. Prefer a better cached fix if one exists, else return the
             // fresh fix (the UI flags poor accuracy) unless it is clearly meaningless.
-            if (cached != null && cached.accuracy <= fresh.accuracy) {
-                return@withContext Result.Success(
-                    toFix(cached, LocationSource.FALLBACK, ageSeconds(cached, triggerTimestampMs)),
-                )
+            if (cached != null) {
+                val cachedAge = ageSeconds(cached, System.currentTimeMillis())
+                val cachedAccuracy = cached.accuracy.takeIf { hasAccuracy(it) }
+                val cachedIsUsable = cachedAge <= settings.cachedMaxAgeSeconds &&
+                    (cachedAccuracy == null || cachedAccuracy <= settings.maxAccuracyMeters) &&
+                    (cachedAccuracy == null || cached.accuracy <= fresh.accuracy)
+                if (cachedIsUsable) {
+                    return@withContext Result.Success(
+                        toFix(cached, LocationSource.FALLBACK, cachedAge),
+                    )
+                }
             }
             if (accuracy == null || accuracy <= ABSURD_ACCURACY_METERS) {
                 return@withContext Result.Success(
@@ -195,14 +204,28 @@ class LocationAcquirer(private val context: Context) {
             )
         }
 
-        // 3. Fresh request timed out. Any known fix — even a stale one — is more useful to the
-        //    user than nothing, and the record is explicitly flagged with its age.
+        // 3. Fresh request timed out. Never label old coordinates as a successful current save:
+        // only use a fallback that remains within the configured age and accuracy limits.
         if (cached != null) {
-            val age = ageSeconds(cached, triggerTimestampMs)
-            return@withContext Result.Success(toFix(cached, LocationSource.FALLBACK, age))
+            val age = ageSeconds(cached, System.currentTimeMillis())
+            val accuracy = cached.accuracy.takeIf { hasAccuracy(it) }
+            val recentEnough = age <= settings.cachedMaxAgeSeconds
+            val accurateEnough = accuracy == null || accuracy <= settings.maxAccuracyMeters
+            if (recentEnough && accurateEnough) {
+                return@withContext Result.Success(toFix(cached, LocationSource.FALLBACK, age))
+            }
+            val reasons = buildList {
+                if (!recentEnough) add("last fix is ${age}s old (limit ${settings.cachedMaxAgeSeconds}s)")
+                if (!accurateEnough && accuracy != null) {
+                    add("last fix accuracy is ${accuracy.toInt()} m (limit ${settings.maxAccuracyMeters.toInt()} m)")
+                }
+            }
+            return@withContext Result.Unavailable(
+                "Fresh GPS fix timed out; refusing stale/poor fallback: ${reasons.joinToString("; ")}",
+            )
         }
 
-        return@withContext Result.Unavailable("No location fix within timeout")
+        return@withContext Result.Unavailable("No fresh GPS fix within ${settings.gpsTimeoutSeconds}s")
     }
 
     // ------------------------------------------------------------------ backends
