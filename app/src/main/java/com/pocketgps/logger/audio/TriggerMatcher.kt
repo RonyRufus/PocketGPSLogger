@@ -37,21 +37,27 @@ object TriggerMatcher {
         return Regex("(?:^|\\s)$phrasePattern(?:\\s|$)").containsMatchIn(normalizedText)
     }
 
-    /** Returns the first index of a contiguous trigger in [recognized], or -1 when absent. */
+    /**
+     * Returns the first event index of a contiguous trigger, using the same escaped whole-word
+     * regex policy as [matches]. Recognition events are normally one word each; normalising here
+     * also makes punctuation/case handling consistent if a backend returns decorated tokens.
+     */
     fun matchStartIndex(recognized: List<String>, trigger: List<String>): Int {
-        if (recognized.isEmpty() || trigger.size < 2 || recognized.size < trigger.size) return -1
-        val last = recognized.size - trigger.size
-        for (start in 0..last) {
-            var ok = true
-            for (k in trigger.indices) {
-                if (recognized[start + k] != trigger[k]) {
-                    ok = false
-                    break
-                }
-            }
-            if (ok) return start
+        if (recognized.isEmpty() || trigger.size < 2) return -1
+        val triggerWords = trigger.flatMap(::tokens)
+        if (triggerWords.size < 2) return -1
+
+        val normalizedText = normalize(recognized.joinToString(" "))
+        if (normalizedText.isEmpty()) return -1
+        val phrasePattern = triggerWords.joinToString(separator = "\\s+") {
+            Regex.escape(it)
         }
-        return -1
+        val match = Regex("(?:^|\\s)($phrasePattern)(?=\\s|$)").find(normalizedText)
+            ?: return -1
+        val phraseStart = match.groups[1]?.range?.first ?: return -1
+        val wordsBefore = normalizedText.substring(0, phraseStart).trim()
+        if (wordsBefore.isEmpty()) return 0
+        return wordsBefore.split(WHITESPACE).size
     }
 
     fun matchesTokens(recognized: List<String>, trigger: List<String>): Boolean =
