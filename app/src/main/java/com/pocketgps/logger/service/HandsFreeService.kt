@@ -122,6 +122,7 @@ class HandsFreeService : android.app.Service() {
     private var wakeLockJob: Job? = null
 
     private var wakeLock: PowerManager.WakeLock? = null
+    private var pocketTapDetector: PocketTapDetector? = null
     private var wakeLockHeldSinceMono = 0L
     private var cumulativeWakeLockMs = 0L
 
@@ -210,6 +211,8 @@ class HandsFreeService : android.app.Service() {
         notificationJob?.cancel()
         wakeLockJob?.cancel()
         releaseAudio()
+        pocketTapDetector?.stop()
+        pocketTapDetector = null
         releaseWakeLock()
         confirmation.shutdown()
         unregisterHeadsetReceiver()
@@ -235,6 +238,20 @@ class HandsFreeService : android.app.Service() {
         refreshAudioRoute()
 
         acquireWakeLock()
+
+        // Motion gesture capture shares the service lifetime and capture pipeline with voice.
+        // The detector itself is sensor-only; it performs no GPS or database work on the callback.
+        pocketTapDetector?.stop()
+        pocketTapDetector = PocketTapDetector(this) {
+            val capturedAt = System.currentTimeMillis()
+            Log.d(TAG, "Pocket double-tap detected; handing off to capture engine")
+            engine.onTriggerDetected(capturedAt, "pocket double tap", null, null)
+            updateNotification()
+        }.also { detector ->
+            if (!detector.start()) {
+                Log.w(TAG, "No supported motion sensor; pocket tap trigger unavailable")
+            }
+        }
 
         settingsJob?.cancel()
         settingsJob = scope.launch {
@@ -277,6 +294,8 @@ class HandsFreeService : android.app.Service() {
         wakeLockJob?.cancel(); wakeLockJob = null
         locationAcquirer.stopPreWarm()
         releaseAudio()
+        pocketTapDetector?.stop()
+        pocketTapDetector = null
         releaseWakeLock()
         engine.markDisabled()
         confirmation.shutdown()
