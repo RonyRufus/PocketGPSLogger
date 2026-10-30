@@ -161,7 +161,7 @@ class LocationAcquirer(private val context: Context) {
             // GPS acquisition can wait up to 60 seconds, so trigger-time age is misleading.
             val age = ageSeconds(cached, System.currentTimeMillis())
             val accuracy = cached.accuracy.takeIf { hasAccuracy(it) }
-            val recentEnough = age <= settings.cachedMaxAgeSeconds
+            val recentEnough = cached.time > 0L && age <= settings.cachedMaxAgeSeconds
             val accurateEnough = accuracy == null || accuracy <= settings.maxAccuracyMeters
             if (recentEnough && accurateEnough) {
                 return@withContext Result.Success(toFix(cached, LocationSource.CACHED, age))
@@ -185,7 +185,7 @@ class LocationAcquirer(private val context: Context) {
             if (cached != null) {
                 val cachedAge = ageSeconds(cached, System.currentTimeMillis())
                 val cachedAccuracy = cached.accuracy.takeIf { hasAccuracy(it) }
-                val cachedIsUsable = cachedAge <= settings.cachedMaxAgeSeconds &&
+                val cachedIsUsable = cached.time > 0L && cachedAge <= settings.cachedMaxAgeSeconds
                     (cachedAccuracy == null || cachedAccuracy <= settings.maxAccuracyMeters) &&
                     (cachedAccuracy == null || cached.accuracy <= fresh.accuracy)
                 if (cachedIsUsable) {
@@ -215,7 +215,8 @@ class LocationAcquirer(private val context: Context) {
                 return@withContext Result.Success(toFix(cached, LocationSource.FALLBACK, age))
             }
             val reasons = buildList {
-                if (!recentEnough) add("last fix is ${age}s old (limit ${settings.cachedMaxAgeSeconds}s)")
+                if (cached.time <= 0L) add("last fix has no valid timestamp")
+                else if (!recentEnough) add("last fix is ${age}s old (limit ${settings.cachedMaxAgeSeconds}s)")
                 if (!accurateEnough && accuracy != null) {
                     add("last fix accuracy is ${accuracy.toInt()} m (limit ${settings.maxAccuracyMeters.toInt()} m)")
                 }
